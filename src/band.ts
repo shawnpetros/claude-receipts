@@ -58,7 +58,7 @@ export type Row = {
   segs: Seg[]
 }
 
-export type BandTone = 'working' | 'over' | 'done' | 'unverified' | 'stopped'
+export type BandTone = 'working' | 'over' | 'done' | 'ended' | 'unverified' | 'stopped'
 
 export type BandView = {
   tone: BandTone
@@ -182,6 +182,17 @@ function currentIndexOf(plan: Plan): number {
   return plan.items.findIndex(item => item.state === 'current')
 }
 
+function reachedOf(plan: Plan | null): { done: number; total: number } {
+  const items = plan?.items ?? []
+  return { done: items.filter(item => item.state === 'done').length, total: items.length }
+}
+
+/** Every step done, or no steps at all to fall short of. */
+function isAllDone(plan: Plan | null): boolean {
+  const { done, total } = reachedOf(plan)
+  return done === total
+}
+
 function stepCounterOf(plan: Plan | null): string {
   if (!plan || plan.items.length === 0) return 'Planning'
   const n = plan.items.length
@@ -201,7 +212,9 @@ function titleRow(model: ViewModel, width: number, options: BandOptions, tone: B
     const left: Seg[] = [{ text: '✶ ', color: ACCENT, bold: true }, { text: title, bold: true, grow: true }]
     return { key: 'title', segs: line(width, left, [...buttons, { text: durationOf(model.elapsedMs) }, space(1), collapse]) }
   }
+  const waiting = model.finished?.waitingAgents ?? 0
   const took = `took ${durationOf(model.finished?.totalMs ?? model.elapsedMs)}`
+  const tail: Seg[] = waiting > 0 ? [{ text: `waiting on ${waiting} ${waiting === 1 ? 'agent' : 'agents'}`, color: WARN }, space(2)] : []
   let badge: Seg
   let text: Seg
   switch (verdict.kind) {
@@ -209,7 +222,7 @@ function titleRow(model: ViewModel, width: number, options: BandOptions, tone: B
       // The file is the point: when the whole receipt does not fit, the
       // path-first form does, so the cut never lands on the path
       badge = { text: ' ⚠ Done, unverified ', color: WARN, inverse: true, bold: true }
-      const room = width - [...badge.text].length - 1 - 2 - widthOf([...buttons, { text: took }, space(1), collapse])
+      const room = width - [...badge.text].length - 1 - 2 - widthOf([...tail, ...buttons, { text: took }, space(1), collapse])
       text = { text: [...verdict.text].length <= room ? verdict.text : verdict.short, color: WARN, grow: true }
       break
     }
@@ -222,13 +235,21 @@ function titleRow(model: ViewModel, width: number, options: BandOptions, tone: B
       text = { text: title, color: DONE, grow: true }
       break
     default:
-      badge =
-        tone === 'stopped'
-          ? { text: ' ■ Stopped ', color: OVER, inverse: true, bold: true }
-          : { text: ' ✓ All done ', color: DONE, inverse: true, bold: true }
-      text = { text: title, ...(tone === 'stopped' ? { dim: true } : { color: DONE }), grow: true }
+      if (tone === 'stopped') {
+        badge = { text: ' ■ Stopped ', color: OVER, inverse: true, bold: true }
+        text = { text: title, dim: true, grow: true }
+      } else if (tone === 'ended') {
+        // Steps left when the turn ended: say how far it got, never "done".
+        // Scar: a green card over three steps that never ran, read as finished
+        const { done, total } = reachedOf(model.plan)
+        badge = { text: ` ■ Turn ended · ${done} of ${total} ${total === 1 ? 'step' : 'steps'} reached `, color: OVER, inverse: true, bold: true }
+        text = { text: title, grow: true }
+      } else {
+        badge = { text: ' ✓ All done ', color: DONE, inverse: true, bold: true }
+        text = { text: title, color: DONE, grow: true }
+      }
   }
-  return { key: 'title', segs: line(width, [badge, space(1), text], [...buttons, { text: took }, space(1), collapse]) }
+  return { key: 'title', segs: line(width, [badge, space(1), text], [...tail, ...buttons, { text: took }, space(1), collapse]) }
 }
 
 function summaryRow(model: ViewModel, width: number, tone: BandTone): Row {
@@ -239,7 +260,7 @@ function summaryRow(model: ViewModel, width: number, tone: BandTone): Row {
     const label = `${done} of ${n} ${n === 1 ? 'step' : 'steps'}` + (plan?.source === 'derived' ? ' · derived' : '')
     const progress = n === 0 ? 1 : done / n
     const percent = `${Math.round(progress * 100)}%`.padStart(4)
-    const color = tone === 'done' ? DONE : tone === 'stopped' ? OVER : WARN
+    const color = tone === 'done' ? DONE : tone === 'stopped' || tone === 'ended' ? OVER : WARN
     const barWidth = Math.max(1, width - [...label].length - 2 - percent.length)
     return {
       key: 'summary',
@@ -273,7 +294,7 @@ function summaryRow(model: ViewModel, width: number, tone: BandTone): Row {
 
 function stateWordOf(item: Milestone, index: number, firstPending: number, isWorking: boolean): Seg {
   if (item.state === 'done') return { text: 'Done', ...(isWorking ? { dim: true } : {}) }
-  if (!isWorking) return { text: 'Not done', color: WARN }
+  if (!isWorking) return { text: 'Not reached', dim: true }
   if (item.state === 'current') return { text: 'Working', color: ACCENT, bold: true }
   return { text: index === firstPending ? 'Next' : 'Later', dim: true }
 }
@@ -288,7 +309,7 @@ function stepRows(model: ViewModel, width: number, tone: BandTone): Row[] {
   const shown = items.slice(start, start + MAX_STEP_ROWS)
   const isWide = width + FRAME >= NARROW_BODY
   const longest = Math.max(...shown.map(item => [...item.label].length))
-  const wordWidth = 'Not done'.length
+  const wordWidth = 'Not reached'.length
   const labelWidth = isWide
     ? Math.max(8, Math.min(longest, Math.floor(width * 0.4), width - 2 - 2 - MINI_BAR - 2 - wordWidth))
     : Math.max(4, Math.min(longest, width - 2 - 2 - wordWidth))
@@ -328,13 +349,15 @@ function stepRows(model: ViewModel, width: number, tone: BandTone): Row[] {
 function toneOf(model: ViewModel, verdict: Verdict): BandTone {
   if (model.isWorking) return model.estimate?.kind === 'range' && model.estimate.isOver ? 'over' : 'working'
   if (model.finished?.isAborted) return 'stopped'
-  return verdict.kind === 'unverified' || verdict.kind === 'failed' ? 'unverified' : 'done'
+  if (verdict.kind === 'unverified' || verdict.kind === 'failed') return 'unverified'
+  return isAllDone(model.plan) ? 'done' : 'ended'
 }
 
 const BORDER: Record<BandTone, Color> = {
   working: ACCENT,
   over: OVER,
   done: DONE,
+  ended: OVER,
   unverified: WARN,
   stopped: OVER,
 }
@@ -383,14 +406,28 @@ export const EFFORT_CHOICES = [
 /** The popover's widest, border and padding included. */
 export const TOOLS_COLUMNS = 64
 
+/**
+ * How much of the transcript the mod draws away. `off`: every row as Claude
+ * Code draws it. `clean`: tool rows one dim line, milestones in full.
+ * `quiet`: tool rows nothing, milestones one dim line, and the chrome a turn
+ * scatters (spinner, progress, notices, hand-backs, interim text) folded.
+ */
+export type RowsLevel = 'off' | 'clean' | 'quiet'
+export const ROWS_LEVELS: readonly RowsLevel[] = ['off', 'clean', 'quiet']
+
+export const ROWS_CHOICES = [
+  { value: 'off', label: 'Off' },
+  { value: 'clean', label: 'Clean' },
+  { value: 'quiet', label: 'Quiet' },
+] as const
+
 export type ToolsModel = {
   /** What `$.session.model()` answered. */
   model: string
   /** The effort level last seen on a model request, if any. */
   effort?: string
-  cleanView: boolean
+  rows: RowsLevel
   spike: boolean
-  suppress: boolean
 }
 
 /**
@@ -450,10 +487,9 @@ export function toolsView(model: ToolsModel, width: number): Row[] {
     },
     chipRow('model', 'model', MODEL_CHOICES, alias, width),
     chipRow('effort', 'effort', EFFORT_CHOICES, effort, width),
+    chipRow('rows', 'rows', ROWS_CHOICES, model.rows, width),
     { key: 'tools-rule', segs: ruleOf(`── ${spaced('settings')} `, width) },
-    settingRow('set-clean', 'Clean view', 'one line per tool row', model.cleanView, width),
     settingRow('set-spike', 'Spike', 'sizing subagent, new tasks', model.spike, width),
-    settingRow('set-suppress', 'Suppress tool rows', 'hide them, keep milestones', model.suppress, width),
   ]
 }
 

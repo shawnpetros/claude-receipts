@@ -261,16 +261,18 @@ export function estimateRow(est: Estimate): string {
 
 /**
  * `~4 to 9 min`, or `~20 to 45 sec` when the top is under a minute. The two
- * numbers always differ: a range that rounds to one value is widened.
+ * numbers always differ: a range that rounds to one value is widened. The
+ * low end never shows 0: `~0 to 10 min` is a range in name only, so it
+ * floors at one unit (1 min, 5 sec) and the top widens to stay above it.
  */
 export function approxRangeOf(lowMs: number, highMs: number): string {
   if (highMs < 60_000) {
-    const low = Math.floor(lowMs / 5_000) * 5
+    const low = Math.max(5, Math.floor(lowMs / 5_000) * 5)
     let high = Math.ceil(highMs / 5_000) * 5
     if (high <= low) high = low + 5
     return `~${low} to ${high} sec`
   }
-  const low = Math.floor(lowMs / 60_000)
+  const low = Math.max(1, Math.floor(lowMs / 60_000))
   let high = Math.ceil(highMs / 60_000)
   if (high <= low) high = low + 1
   return `~${low} to ${high} min`

@@ -2,10 +2,12 @@
 declare module 'claude-code' {
   interface PluginState {
     receipts: {
-      /** Tool rows drawn as one dim line each; milestone rows always in full. */
-      cleanView: boolean
-      /** Plain tool rows draw nothing and milestones one dim line, during the turn and after. */
-      suppress: boolean
+      /** How much the mod draws away: off, clean (tool rows one dim line) or quiet. */
+      rows: 'off' | 'clean' | 'quiet'
+      /** The level `/receipts clean` returns to from off. */
+      rowsLast: 'off' | 'clean' | 'quiet'
+      /** A main-loop turn is running; the quiet sites redraw at each turn edge. */
+      working: boolean
       /** The band folded to its title row. */
       collapsed: boolean
       /** The settings popover is open in the band. */

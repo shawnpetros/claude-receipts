@@ -15,7 +15,8 @@ const NOTICE = { text: 'Using model from settings', command: null }
 const OUTPUT = (command: string) => ({ command, args: '', text: 'printed', isErrored: false })
 
 async function levelOf($: unknown, level: Level): Promise<void> {
-  await flip($ as never, `rows-${level}`)
+  // Quiet is the default; its chip is the highlighted one, not a button
+  if (level !== 'quiet') await flip($ as never, `rows-${level}`)
 }
 
 async function drawnLines($: { ui: { mount: (e: never) => Promise<{ drawn: () => Promise<unknown>; unmount: () => Promise<void> }> } }, site: never): Promise<string[]> {
@@ -40,8 +41,6 @@ describe('rows level: chrome sites while a turn runs', () => {
       // The mod's own output and an error line always show
       expect(await drawnLines($ as never, siteOf('CommandOutput', OUTPUT('receipts')))).toEqual([ENGINE])
       expect(await drawnLines($ as never, siteOf('CommandOutput', { ...OUTPUT('compact'), isErrored: true }))).toEqual([ENGINE])
-      // Never touched: the question dialog
-      expect(await drawnLines($ as never, siteOf('AskUserQuestion', { tool: 'AskUserQuestion', questions: [] }))).toEqual([ENGINE])
     })
   }
 

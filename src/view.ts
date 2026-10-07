@@ -29,7 +29,7 @@ export type ViewModel = {
   /** Time since the task shown started. */
   elapsedMs: number
   /** Set once a task finished: how long it took, its receipt line, and whether it was cut short. */
-  finished: { totalMs: number; receipt: string | null; isAborted: boolean } | null
+  finished: { totalMs: number; receipt: string | null; isAborted: boolean; waitingAgents: number } | null
 }
 
 export const BAR_WIDTH = 24

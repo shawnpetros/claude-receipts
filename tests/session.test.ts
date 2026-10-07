@@ -44,6 +44,7 @@ function fakeHostOf(options: { plan?: string } = {}) {
     cwd: async () => '/work',
     repo: async () => null,
     list: async () => [],
+    agents: async () => [],
   }
   const settle = async () => {
     for (let i = 0; i < 50; i += 1) await Promise.resolve()

@@ -1,7 +1,7 @@
 {
   "name": "receipts",
-  "version": "0.1.0",
-  "description": "Milestones instead of tool walls, an estimate that learns and names its basis, and a receipt under every answer that claims done.",
+  "version": "0.2.1",
+  "description": "Says UNVERIFIED under any answer that claims done with nothing run after the last edit. A band above the prompt shows the steps and an estimate that names its basis; tool rows stay quiet.",
   "author": {
     "name": "Shawn Petros"
   },
@@ -17,8 +17,8 @@
     },
     "cleanView": {
       "type": "boolean",
-      "title": "Clean view on start",
-      "description": "Start each session with tool rows collapsed to one dim line each. Milestone events always draw in full.",
+      "title": "Tool rows quiet on start",
+      "description": "Start each session at the quiet rows level: tool rows hidden, milestones one dim line, the turn's chrome folded. Off starts with every row drawn in full. The band's settings change it for the session.",
       "required": false,
       "default": true
     }

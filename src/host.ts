@@ -31,4 +31,6 @@ export type Host = {
   cwd: () => Promise<string>
   repo: () => Promise<SessionRepo | null>
   list: (path: string) => Promise<FsEntry[]>
+  /** The session's agents, as `$.agent.list()` answers. */
+  agents: () => Promise<readonly { id: string; status: string; parentId?: string; spawnedBy?: string }[]>
 }

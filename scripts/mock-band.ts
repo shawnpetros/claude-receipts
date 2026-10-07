@@ -58,7 +58,7 @@ const done = (receipt: string | null): ViewModel => ({
   estimate: null,
   isWorking: false,
   elapsedMs: 107_000,
-  finished: { totalMs: 107_000, receipt, isAborted: false },
+  finished: { totalMs: 107_000, receipt, isAborted: false, waitingAgents: 0 },
 })
 
 function show(label: string, model: ViewModel, width = columns, options = OPEN): void {
@@ -75,6 +75,8 @@ show('over the range', {
   estimate: range({ isOver: true, overByMs: 130_000, progress: 0.62, remainingLowMs: 60_000, remainingHighMs: 4 * 60_000, stepProgress: [1, 1, 0.95, 0] }),
 })
 show('done, verified', done('receipt · bun test ✓ 152 pass · 1m ago'))
+show('turn ended with steps left', { ...done(null), plan: planOf(2) })
+show('done, agents still running', { ...done(null), finished: { totalMs: 107_000, receipt: null, isAborted: false, waitingAgents: 2 } })
 show('done, unverified', done('UNVERIFIED · claimed done, no test/build/run after the last edit (src/x.ts at 14:02)'))
 show('working, narrow terminal', base, 95)
 show('done, unverified, narrow terminal', done('UNVERIFIED · claimed done, no test/build/run after the last edit (src/x.ts at 14:02)'), 95)
@@ -83,5 +85,5 @@ show('basis tooltip (b)', base, columns, { ...OPEN, showBasis: true })
 
 const toolsWidth = Math.min(columns, TOOLS_COLUMNS) - 4
 console.log(`\nsettings popover (t) · ${toolsWidth + 4} columns, right-aligned in the band`)
-const rows = toolsView({ model: 'claude-opus-5-5[1m]', effort: 'high', cleanView: true, spike: true, suppress: true }, toolsWidth)
+const rows = toolsView({ model: 'claude-opus-5-5[1m]', effort: 'high', rows: 'quiet', spike: true }, toolsWidth)
 for (const row of framedText(rows, toolsWidth)) console.log(row.padStart(columns))

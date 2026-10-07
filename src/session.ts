@@ -146,6 +146,8 @@ export class ReceiptsSession {
   private repoEntries: string[] = []
   private task: TaskState | null = null
   private last: { plan: Plan; prompt: string; totalMs: number; receipt: string | null; isAborted: boolean } | null = null
+  /** Agents the main loop started that were still running when its turn ended. */
+  private waiting = new Set<string>()
   private readonly milestoneIds = new Set<string>()
   private readonly spikeWaiters = new Map<string, TaskState>()
   private ticker: { cancel: () => void } | null = null
@@ -184,6 +186,8 @@ export class ReceiptsSession {
     }
     this.task = task
     this.last = null
+    // The fallback for an agent whose end never reached us: the next prompt
+    this.waiting.clear()
     if (text.trim()) {
       task.typed = host
         .classify(text.slice(0, 4_000), TASK_TYPES)
@@ -292,7 +296,12 @@ export class ReceiptsSession {
    */
   async turnComplete(host: Host, e: CompleteEvent): Promise<string | null> {
     const task = this.task
-    if (!task || task.turnId !== e.turnId) return null
+    if (!task) return null
+    // Any main-loop turn.complete ends the task the band shows, even one whose
+    // id the band never saw start (a reload, a second copy of the mod). Scar:
+    // a band left in Working after the turn had ended. Only a matching id is
+    // learned from.
+    const isOwn = task.turnId === e.turnId
     this.task = null
     this.ticker?.cancel()
     this.ticker = null
@@ -311,7 +320,7 @@ export class ReceiptsSession {
     // A task-tool plan finished only when every item did; a derived or
     // fallback plan finished when the turn answered.
     const isFinished = plan.source === 'tasks' ? isComplete(plan) : true
-    if (!e.isAborted && e.reason === 'answer' && isFinished) {
+    if (isOwn && !e.isAborted && e.reason === 'answer' && isFinished) {
       const range = task.beforeFinal ?? task.firstRange
       const steps = stepDurations(plan, task.startedAt)
       this.history = addTask(this.history, {
@@ -324,14 +333,30 @@ export class ReceiptsSession {
       this.stats = statsOf(this.history)
       await host.storeSet(HISTORY_KEY, this.history).catch(() => undefined)
     }
+    await this.countWaiting(host)
     host.redraw()
     return line
+  }
+
+  /**
+   * The main loop's agents still going: started by the model or the person
+   * (not by this mod, so not the spike), not finished.
+   */
+  private async countWaiting(host: Host): Promise<void> {
+    const agents = await host.agents().catch(() => [])
+    this.waiting = new Set(
+      agents
+        .filter(agent => agent.parentId === undefined && agent.spawnedBy !== 'receipts')
+        .filter(agent => agent.status === 'pending' || agent.status === 'running' || agent.status === 'waiting')
+        .map(agent => agent.id),
+    )
   }
 
   /**
    * A subagent's turn ended; if it was this mod's spike, read its guess.
    */
   subagentComplete(host: Host, agentId: string, answer: string): void {
+    if (this.waiting.delete(agentId)) host.redraw()
     const task = this.spikeWaiters.get(agentId)
     if (!task) return
     this.spikeWaiters.delete(agentId)
@@ -355,7 +380,9 @@ export class ReceiptsSession {
       calibration: calibrationLines(calibrationOf(this.history)),
       title: task ? task.prompt : (this.last?.prompt ?? ''),
       elapsedMs: task ? Math.max(0, now - task.startedAt) : (this.last?.totalMs ?? 0),
-      finished: this.last ? { totalMs: this.last.totalMs, receipt: this.last.receipt, isAborted: this.last.isAborted } : null,
+      finished: this.last
+        ? { totalMs: this.last.totalMs, receipt: this.last.receipt, isAborted: this.last.isAborted, waitingAgents: this.waiting.size }
+        : null,
     }
   }
 

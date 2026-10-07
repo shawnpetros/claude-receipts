@@ -107,9 +107,10 @@ describe('turn end in the session', () => {
     await $.turn.start({ text: 'one', turnId: 'te4' })
     world.agents.push({ id: 'a1', status: 'running' })
     await $.turn.complete({ turnId: 'te4', answer: 'ok', durationMs: 1, isAborted: false, reason: 'answer' })
+    const ended = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
+    expect((await bandText(ended)).text).toMatch(/waiting on 1 agent/)
+    await ended.unmount()
     await $.turn.start({ text: 'two', turnId: 'te5' })
-    await $.turn.complete({ turnId: 'te5', answer: 'ok', durationMs: 1, isAborted: false, reason: 'answer' })
-    world.agents.length = 0
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
     expect((await bandText(ui)).text).not.toMatch(/waiting/)
   })

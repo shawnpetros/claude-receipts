@@ -1,28 +1,46 @@
 import type { ConfigRow, EngineInterface, On, PluginOptions, RenderElement } from 'claude-code'
 import { atom, read, update } from 'claude-code'
 
-import { ACCENT, bandView, EFFORT_CHOICES, MODEL_CHOICES, TOOLS_COLUMNS, toolsView, type Row, type Seg } from '../src/band'
+import {
+  ACCENT,
+  bandView,
+  EFFORT_CHOICES,
+  MODEL_CHOICES,
+  ROWS_LEVELS,
+  TOOLS_COLUMNS,
+  toolsView,
+  type Row,
+  type RowsLevel,
+  type Seg,
+} from '../src/band'
 import type { Host } from '../src/host'
+import { firstLineOf, handbackLineOf, QuietLog } from '../src/quiet'
 import { PANE_ID, PANE_TITLE, ReceiptsSession } from '../src/session'
 import { paneLines, toolGroupText, toolResultText, toolRowText, type Line } from '../src/view'
 
 /**
- * Clean view: tool rows draw as one dim line. Invariant 4, clean view hides
- * rendering only: these hooks return a drawing and never touch the
- * transcript, so toggling it off shows every row as it was. Scar: the
- * /buddy main-model leak; a mod rewriting content is a different and riskier
- * thing than a mod redrawing it.
+ * The rows level: `off` draws every row as Claude Code does; `clean` draws
+ * tool rows as one dim line and milestones in full; `quiet` (the default)
+ * draws tool rows as nothing and milestones as one dim line, during the turn
+ * and after it, and folds the chrome a turn scatters: the spinner, progress
+ * pills, notices and command output while working, subagent hand-backs, and
+ * interim assistant text down to its first line.
+ *
+ * Invariant 4, drawing only: these hooks return a drawing and never touch
+ * the transcript, so `off` shows every row as it was. Scar: the /buddy
+ * main-model leak; a mod rewriting content is a different and riskier thing
+ * than a mod redrawing it. Milestones always show (invariant 5).
  */
-const cleanView = atom({ plugin: 'receipts', key: 'cleanView' }, true)
+const rows = atom({ plugin: 'receipts', key: 'rows' }, 'quiet')
+
+/** The level `/receipts clean` and the pane's `c` go back to from `off`. */
+const rowsLast = atom({ plugin: 'receipts', key: 'rowsLast' }, 'quiet')
 
 /**
- * Suppression, on top of clean view: plain tool rows draw nothing and
- * milestone rows one dim line each, during the turn and after it, so the
- * transcript keeps the assistant's text and the band carries the rest.
- * Drawing only, as clean view (invariant 4). Milestones still show
- * (invariant 5), folded to a line with their outcome.
+ * Whether a main-loop turn is running. The quiet sites read it, so they draw
+ * again once at each turn edge, not on every tick.
  */
-const suppress = atom({ plugin: 'receipts', key: 'suppress' }, true)
+const working = atom({ plugin: 'receipts', key: 'working' }, false)
 
 /** The band folded to its title row by its own `[▾]` (`[▸]` folded). */
 const collapsed = atom({ plugin: 'receipts', key: 'collapsed' }, false)
@@ -42,7 +60,9 @@ const spike = atom({ plugin: 'receipts', key: 'spike' }, true)
  */
 const tick = atom({ plugin: 'receipts', key: 'tick' }, 0)
 
-const USAGE = 'usage: /receipts (toggle the pane), /receipts tools, /receipts stats, /receipts reset-history'
+const USAGE =
+  'usage: /receipts (toggle the pane), /receipts tools, /receipts rows [off|clean|quiet], /receipts clean, /receipts basis, /receipts stats, /receipts reset-history'
+const PANE_ROWS = 14
 
 /**
  * The mods API as the session logic sees it. Top level and handed `$`, so
@@ -65,7 +85,32 @@ function hostOf($: EngineInterface): Host {
     cwd: () => $.session.cwd(),
     repo: () => $.session.repo(),
     list: path => $.fs.list(path),
+    agents: () => $.agent.list(),
   }
+}
+
+/**
+ * `off` and back: to the level the person had before, quiet if none.
+ */
+async function toggleClean($: EngineInterface): Promise<RowsLevel> {
+  const level = (await read($, rows)) as RowsLevel
+  if (level === 'off') {
+    const back = (await read($, rowsLast)) as RowsLevel
+    await update($, rows, () => back)
+    return back
+  }
+  await update($, rowsLast, () => level)
+  await update($, rows, () => 'off')
+  return 'off'
+}
+
+async function setRows($: EngineInterface, level: RowsLevel): Promise<void> {
+  if (level !== 'off') await update($, rowsLast, () => level)
+  await update($, rows, () => level)
+}
+
+async function levelOf($: EngineInterface): Promise<RowsLevel> {
+  return (await read($, rows)) as RowsLevel
 }
 
 /**
@@ -87,7 +132,7 @@ async function choose($: EngineInterface, key: 'model' | 'effort', value: string
  * The userConfig defaults into state, where the band's switches change them.
  */
 async function applyDefaults($: EngineInterface, session: ReceiptsSession, isClean: boolean, isSpike: boolean): Promise<void> {
-  if (!isClean) await update($, cleanView, () => false)
+  if (!isClean) await update($, rows, () => 'off')
   if (!isSpike) await update($, spike, () => false)
   session.setSpike(isSpike)
 }
@@ -154,17 +199,18 @@ function outcomeMarkOf(props: { isRunning?: boolean; isErrored?: boolean; isInte
 export function register(on: On, options: PluginOptions): void {
   const isSpikeByDefault = options.spike !== false
   const session = new ReceiptsSession({ spike: isSpikeByDefault })
+  const quiet = new QuietLog()
   const isCleanByDefault = options.cleanView !== false
 
   on('session.start', async ($, e, next) => {
     await session.start(hostOf($))
-    const stored = await $.state.get({ plugin: 'receipts', key: 'cleanView' })
+    const stored = await $.state.get({ plugin: 'receipts', key: 'rows' })
     if (stored.version === 0) await applyDefaults($, session, isCleanByDefault, isSpikeByDefault)
     try {
       await $.command.register({
         name: 'receipts',
         description: 'Toggle the receipts pane, open its settings, or show calibration stats',
-        argumentHint: '[tools|stats|reset-history]',
+        argumentHint: '[tools|rows|clean|basis|stats|reset-history]',
         immediate: true,
       })
     } catch {
@@ -181,6 +227,7 @@ export function register(on: On, options: PluginOptions): void {
 
   on('turn.start', async ($, e, next) => {
     await session.turnStart(hostOf($), e.turnId, e.text)
+    await update($, working, () => true)
     return next(e)
   })
 
@@ -206,6 +253,9 @@ export function register(on: On, options: PluginOptions): void {
       return result
     }
     const line = await session.turnComplete(hostOf($), e)
+    await update($, working, () => false)
+    // The final answer, drawn as one dim line while it streamed, in full now
+    if (quiet.finish(e.answer)) $.ui.invalidate('ui.render')
     if (!line) return result
     const isOwnText = result.text !== '' && result.text !== e.answer
     return { ...result, text: isOwnText ? `${result.text}\n${line}` : line }
@@ -218,6 +268,24 @@ export function register(on: On, options: PluginOptions): void {
       await update($, toolsOpen, () => true)
       return {}
     }
+    if (arg === 'basis') {
+      session.toggleBasis()
+      $.ui.invalidate('ui.render')
+      return { text: session.isBasisShown ? 'basis shown on the band' : 'basis hidden' }
+    }
+    if (arg === 'clean') return { text: `rows: ${await toggleClean($)}` }
+    if (arg === 'rows' || arg.startsWith('rows ')) {
+      const wanted = arg.slice(4).trim()
+      if (wanted === '') {
+        const now = await levelOf($)
+        const next = ROWS_LEVELS[(ROWS_LEVELS.indexOf(now) + 1) % ROWS_LEVELS.length]!
+        await setRows($, next)
+        return { text: `rows: ${next}` }
+      }
+      if (!(ROWS_LEVELS as readonly string[]).includes(wanted)) return { text: USAGE }
+      await setRows($, wanted as RowsLevel)
+      return { text: `rows: ${wanted}` }
+    }
     if (arg === 'reset-history') {
       const count = await session.resetHistory(hostOf($))
       return { text: `history cleared: ${count} ${count === 1 ? 'task' : 'tasks'} forgotten` }
@@ -228,7 +296,8 @@ export function register(on: On, options: PluginOptions): void {
       session.paneClosed()
       return {}
     }
-    const placed = await $.ui.open({ id: PANE_ID, title: PANE_TITLE })
+    // rows: inline (the main screen) it opens that tall, not cut to a third
+    const placed = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows: PANE_ROWS })
     session.paneOpened(placed.isPlaced)
     return {}
   })
@@ -241,7 +310,7 @@ export function register(on: On, options: PluginOptions): void {
   // The pane: the long view, opened only by /receipts
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE_ID) return next(e)
-    const isClean = await read($, cleanView)
+    const isClean = (await levelOf($)) !== 'off'
     await read($, tick)
     const now = await $.clock.now()
     session.paneDrawn()
@@ -260,7 +329,7 @@ export function register(on: On, options: PluginOptions): void {
               label: isClean ? 'clean view on' : 'clean view off',
               hotkey: 'c',
               plain: true,
-              onPress: () => update($, cleanView, value => !value),
+              onPress: () => toggleClean($),
             }),
             Button({
               key: 'basis',
@@ -298,14 +367,13 @@ export function register(on: On, options: PluginOptions): void {
       },
       'tools-toggle': () => update($, toolsOpen, value => !value),
       'tools-close': () => update($, toolsOpen, () => false),
-      'set-clean': () => update($, cleanView, value => !value),
-      'set-suppress': () => update($, suppress, value => !value),
       'set-spike': () =>
         update($, spike, value => {
           session.setSpike(!value)
           return !value
         }),
     }
+    for (const level of ROWS_LEVELS) presses[`rows-${level}`] = () => setRows($, level)
     for (const choice of MODEL_CHOICES) {
       presses[`model-${choice.value}`] = async () => {
         await choose($, 'model', choice.value)
@@ -341,9 +409,8 @@ export function register(on: On, options: PluginOptions): void {
       {
         model: await sessionModelOf($),
         ...(session.effortLevel ? { effort: session.effortLevel } : {}),
-        cleanView: await read($, cleanView),
+        rows: await levelOf($),
         spike: await read($, spike),
-        suppress: await read($, suppress),
       },
       toolsWidth - 4,
     )
@@ -365,13 +432,13 @@ export function register(on: On, options: PluginOptions): void {
 
   // ctrl+o: a ToolGroup's props say when it is expanded, so an expanded group
   // draws in full. ToolUse and ToolResult props carry no such flag, so a
-  // single row cannot be expanded past clean view; the toggle restores them
+  // single row cannot be expanded past the level; `/receipts rows off` can
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (!(await read($, cleanView))) return next(e)
+    const level = await levelOf($)
+    if (level === 'off') return next(e)
     const isMilestone = session.isMilestoneRow(e.props.tool_use_id, e.props.tool, e.props.input)
-    const isSuppressed = await read($, suppress)
     const { Box, Text } = $.ui.resolve(e)
-    if (isSuppressed) {
+    if (level === 'quiet') {
       if (!isMilestone) return Box({})
       const text = toolRowText(e.props.tool, e.props.input, session.workingDirectory) + outcomeMarkOf(e.props)
       return Text({ dimColor: true, wrap: 'truncate-end', children: [text] })
@@ -381,18 +448,80 @@ export function register(on: On, options: PluginOptions): void {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (!(await read($, cleanView))) return next(e)
+    const level = await levelOf($)
+    if (level === 'off') return next(e)
     const { Box, Text } = $.ui.resolve(e)
-    // Suppressed, a milestone's outcome is folded into its ToolUse line
-    if (await read($, suppress)) return Box({})
+    // Quiet: a milestone's outcome is folded into its ToolUse line
+    if (level === 'quiet') return Box({})
     if (session.isMilestoneRow(e.props.tool_use_id, e.props.tool, undefined)) return next(e)
     return Text({ dimColor: true, wrap: 'truncate-end', children: [toolResultText(e.props.output, e.props.isErrored)] })
   })
 
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-    if (e.props.isExpanded || !(await read($, cleanView))) return next(e)
+    const level = await levelOf($)
+    if (e.props.isExpanded || level === 'off') return next(e)
     const { Box, Text } = $.ui.resolve(e)
-    if (await read($, suppress)) return Box({})
+    if (level === 'quiet') return Box({})
     return Text({ dimColor: true, wrap: 'truncate-end', children: [toolGroupText(e.props.calls)] })
+  })
+
+  // ---- quiet: the chrome a turn scatters ------------------------------------
+  // Never hooked: AskUserQuestion and the permission dialogs. A question to
+  // the person is the one thing quiet must never fold.
+
+  // The band shows the elapsed time and the step; the spinner repeats it
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    if ((await levelOf($)) !== 'quiet') return next(e)
+    const { Box } = $.ui.resolve(e)
+    return Box({})
+  })
+
+  on('ui.render', { component: 'ToolProgress' }, async ($, e, next) => {
+    if ((await levelOf($)) !== 'quiet' || !(await read($, working))) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return Box({})
+  })
+
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+    if ((await levelOf($)) !== 'quiet' || !(await read($, working))) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return Box({})
+  })
+
+  on('ui.render', { component: 'InfoNotice' }, async ($, e, next) => {
+    if ((await levelOf($)) !== 'quiet' || !(await read($, working))) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return Box({})
+  })
+
+  // Another command's output mid-turn; this mod's own and any error line show
+  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
+    if (e.props.command === 'receipts' || e.props.isErrored) return next(e)
+    if ((await levelOf($)) !== 'quiet' || !(await read($, working))) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return Box({})
+  })
+
+  // A subagent's hand-back, a peer's message, a task notification: nothing
+  // while the turn runs, one dim line after. The person's own prompt and a
+  // ctrl+o expanded row are never touched
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (e.props.isExpanded || e.props.origin.kind === 'composer') return next(e)
+    if ((await levelOf($)) !== 'quiet') return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    if (await read($, working)) return Box({})
+    return Text({ dimColor: true, wrap: 'truncate-end', children: [handbackLineOf(e.props.text, e.props.from?.name)] })
+  })
+
+  // Interim text: its first line, dim. The final answer redraws in full when
+  // turn.complete names it (QuietLog). A block never seen mid-turn is left alone
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if ((await levelOf($)) !== 'quiet') return next(e)
+    const isWorking = await read($, working)
+    if (isWorking) quiet.seen(e.requestId, e.props.text)
+    const kind = quiet.kindOf(e.requestId)
+    if (kind !== 'interim') return next(e)
+    const { Text } = $.ui.resolve(e)
+    return Text({ dimColor: true, wrap: 'truncate-end', children: [firstLineOf(e.props.text)] })
   })
 }

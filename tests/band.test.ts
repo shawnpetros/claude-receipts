@@ -54,7 +54,7 @@ function workingOf(overrides: Partial<ViewModel> = {}): ViewModel {
 
 function doneOf(receipt: string | null): ViewModel {
   const plan = planOf(['Pick the page style and layout', 'Check how the page gets live weather', 'Build the weather dashboard', 'Publish it and share the link'], 4)
-  return workingOf({ plan, estimate: null, isWorking: false, elapsedMs: 107_000, finished: { totalMs: 107_000, receipt, isAborted: false } })
+  return workingOf({ plan, estimate: null, isWorking: false, elapsedMs: 107_000, finished: { totalMs: 107_000, receipt, isAborted: false, waitingAgents: 0 } })
 }
 
 const OPTIONS = { collapsed: false, showBasis: false }
