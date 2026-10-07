@@ -7,6 +7,8 @@ const ENGINE = 'drawn by Claude Code'
 describe('clean view', () => {
   test('a plain tool row draws one dim line; milestone rows draw in full; the toggle restores', async ($, on) => {
     const world = worldOf(on)
+    // This test covers clean view alone; suppression has its own below
+    await $.state.set({ plugin: 'receipts', key: 'suppress' }, false)
     await $.turn.start({ text: 'fix x', turnId: 'c1' })
     await $.tool.call({ tool: 'Read', file_path: '/work/src/a.ts' })
     await $.tool.call({ tool: 'Edit', file_path: '/work/src/x.ts', old_string: 'a', new_string: 'b' })
@@ -94,5 +96,72 @@ describe('clean view', () => {
     await $.tool.call({ tool: 'Read', file_path: '/work/src/a.ts' })
     const row = await $.ui.mount({ ...toolRowOf(world.toolIds[0]!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
     expect(linesOf(await row.drawn())).toEqual([ENGINE])
+  })
+
+  test('suppressed: plain tool rows draw nothing while the turn runs, milestones one dim line each', async ($, on) => {
+    const world = worldOf(on)
+    await $.turn.start({ text: 'fix x', turnId: 's1' })
+    await $.tool.call({ tool: 'Read', file_path: '/work/src/a.ts' })
+    await $.tool.call({ tool: 'Edit', file_path: '/work/src/x.ts', old_string: 'a', new_string: 'b' })
+    await $.tool.call({ tool: 'Bash', command: 'bun test' })
+    const [readId, editId, testId] = world.toolIds
+
+    const read = await $.ui.mount({ ...toolRowOf(readId!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
+    const empty = (await read.drawn()) as { type: string }
+    expect(empty.type).toBe('Box')
+    expect(linesOf(empty)).toEqual([])
+    const result = await $.ui.mount({
+      plugin: 'receipts',
+      component: 'ToolResult',
+      requestId: readId!,
+      surface: 'terminal',
+      props: { tool_use_id: readId!, tool: 'Read', output: 'a\nb', isErrored: false },
+    })
+    expect(linesOf(await result.drawn())).toEqual([])
+    const group = await $.ui.mount({
+      plugin: 'receipts',
+      component: 'ToolGroup',
+      requestId: 'g2',
+      surface: 'terminal',
+      props: { calls: [{ tool_use_id: 'x1', tool: 'Read', input: {}, isRunning: false, isErrored: false, isInterrupted: false }], isActive: true, isExpanded: false } as never,
+    })
+    expect(linesOf(await group.drawn())).toEqual([])
+
+    // Milestones: one dim line, the outcome folded in; their result rows draw nothing
+    const edit = await $.ui.mount({ ...toolRowOf(editId!, 'Edit', { file_path: '/work/src/x.ts' }), surface: 'terminal' })
+    const editDrawn = (await edit.drawn()) as { props: { dimColor?: boolean } }
+    expect(editDrawn.props.dimColor).toBe(true)
+    expect(linesOf(editDrawn)).toEqual(['● Edit src/x.ts ✓'])
+    const verify = await $.ui.mount({ ...toolRowOf(testId!, 'Bash', { command: 'bun test' }), surface: 'terminal' })
+    expect(linesOf(await verify.drawn())).toEqual(['● Bash bun test ✓'])
+    const verifyResult = await $.ui.mount({
+      plugin: 'receipts',
+      component: 'ToolResult',
+      requestId: testId!,
+      surface: 'terminal',
+      props: { tool_use_id: testId!, tool: 'Bash', output: { stdout: '1 pass', stderr: '', interrupted: false }, isErrored: false },
+    })
+    expect(linesOf(await verifyResult.drawn())).toEqual([])
+
+    // Once the turn ends, plain rows come back as clean view's one dim line
+    await $.turn.complete({ turnId: 's1', answer: 'ok', durationMs: 1, isAborted: false, reason: 'answer' })
+    await read.unmount()
+    const after = await $.ui.mount({ ...toolRowOf(readId!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
+    expect(linesOf(await after.drawn())).toEqual(['● Read src/a.ts'])
+
+    // And the toggle restores every row in full
+    await $.state.set({ plugin: 'receipts', key: 'cleanView' }, false)
+    await after.unmount()
+    const full = await $.ui.mount({ ...toolRowOf(readId!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
+    expect(linesOf(await full.drawn())).toEqual([ENGINE])
+  })
+
+  test('suppression off: rows are clean view\'s dim lines even mid-turn', async ($, on) => {
+    const world = worldOf(on)
+    await $.state.set({ plugin: 'receipts', key: 'suppress' }, false)
+    await $.turn.start({ text: 'fix x', turnId: 's2' })
+    await $.tool.call({ tool: 'Read', file_path: '/work/src/a.ts' })
+    const row = await $.ui.mount({ ...toolRowOf(world.toolIds[0]!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
+    expect(linesOf(await row.drawn())).toEqual(['● Read src/a.ts'])
   })
 })

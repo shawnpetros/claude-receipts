@@ -13,6 +13,10 @@ export type World = {
   toolIds: string[]
   opens: unknown[]
   saved: Map<string, unknown>
+  /** `$.config.set` calls the mod made, as [key, value]. */
+  configSets: [string, unknown][]
+  /** Slash commands the mod ran through `$.command.run`, as typed. */
+  commandRuns: string[]
 }
 
 export type WorldOptions = {
@@ -28,6 +32,10 @@ export type WorldOptions = {
   store?: Record<string, unknown>
   /** What each tool call resolves to, by tool name. */
   tools?: Record<string, unknown>
+  /** What `$.session.model()` answers. */
+  model?: string
+  /** The rows `$.config.list()` answers. */
+  configRows?: unknown[]
 }
 
 /**
@@ -45,6 +53,8 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
     toolIds: [],
     opens: [],
     saved,
+    configSets: [],
+    commandRuns: [],
   }
   const modelMs = options.modelMs ?? 0
   const plan = options.plan ?? ['Read the code', 'Fix the bug', 'Run the tests']
@@ -103,6 +113,16 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('session.start', () => ({ cwd: '/work' }))
+  on('session.model', () => ({ value: options.model ?? 'claude-opus-5-5' }))
+  on('config.list', () => ({ value: options.configRows ?? [] }))
+  on('config.set', ($, e) => {
+    world.configSets.push([e.key, e.value])
+    return { value: e.value }
+  })
+  on('command.run', ($, e) => {
+    world.commandRuns.push(`/${e.command} ${e.args}`.trim())
+    return { text: '' }
+  })
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
   on('turn.step', async function* ($, e) {
     return { turnId: e.turnId, index: e.index, answer: STEP_ANSWERS.get(`${e.turnId}:${e.index}`) ?? '', toolUses: [], stopReason: 'tool_use', usage: null }
@@ -159,6 +179,15 @@ export const BAND = {
     scroll: { offset: 0, bodyRows: 12 },
     view: {},
   },
+} as const
+
+/**
+ * The band above the prompt in a 160-column terminal.
+ */
+export const BAND_WIDE = {
+  ...BAND,
+  viewport: { columns: 160, rows: 40, isFullscreen: false },
+  props: { ...BAND.props, bodyColumns: 155 },
 } as const
 
 /**
