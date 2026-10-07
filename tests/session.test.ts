@@ -34,7 +34,6 @@ function fakeHostOf(options: { plan?: string } = {}) {
       store.delete(key)
     },
     redraw: () => undefined,
-    openPane: async () => ({ isPlaced: true }),
     classify: async (_, labels) => (labels.includes('build') ? 'debug' : labels.includes('claims-done') ? 'claims-done' : 'step-not-done'),
     complete: async () =>
       ({ isAnswered: true, text: options.plan ?? '1. Read the code\n2. Fix the bug\n3. Run the tests', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }) as never,

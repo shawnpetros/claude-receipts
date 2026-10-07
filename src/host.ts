@@ -4,10 +4,8 @@ import type {
   FsEntry,
   ModelCompleteRequest,
   ModelCompleteResult,
-  PaneOpenArgs,
   SessionRepo,
   Timer,
-  UiOpenResult,
 } from 'claude-code'
 
 /**
@@ -27,7 +25,6 @@ export type Host = {
   storeDelete: (key: string) => Promise<void>
   /** Redraws the pane and the band (they read the tick); tool rows are left alone. */
   redraw: () => void
-  openPane: (pane: PaneOpenArgs) => Promise<UiOpenResult>
   classify: (text: string, labels: readonly string[]) => Promise<string | undefined>
   complete: (request: ModelCompleteRequest) => Promise<ModelCompleteResult>
   spawn: (args: AgentSpawnArgs) => Promise<AgentSpawnResult>

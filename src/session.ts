@@ -145,15 +145,15 @@ export class ReceiptsSession {
   private hasTests = false
   private repoEntries: string[] = []
   private task: TaskState | null = null
-  private last: { plan: Plan; totalMs: number; receipt: string | null } | null = null
+  private last: { plan: Plan; prompt: string; totalMs: number; receipt: string | null; isAborted: boolean } | null = null
   private readonly milestoneIds = new Set<string>()
   private readonly spikeWaiters = new Map<string, TaskState>()
   private ticker: { cancel: () => void } | null = null
-  private hasAutoOpened = false
   private isPaneOpen = false
   private isPaneShown = false
   private showBasis = false
   private cwd = ''
+  private effort: string | undefined
 
   constructor(private readonly options: SessionOptions) {}
 
@@ -196,16 +196,9 @@ export class ReceiptsSession {
     this.ticker = host.every(TICK_MS, () => {
       void this.tick(host)
     })
-    if (!this.hasAutoOpened) {
-      this.hasAutoOpened = true
-      try {
-        const placed = await host.openPane({ id: PANE_ID, title: PANE_TITLE })
-        this.isPaneOpen = true
-        this.isPaneShown = placed.isPlaced
-      } catch {
-        // No pane on this surface: the band carries it
-      }
-    }
+    // No pane opens unasked: the band above the prompt is the surface, and
+    // `/receipts` opens the pane for the long view. Scar: the auto-opened
+    // dock took a third of a fullscreen terminal to show four lines.
     host.redraw()
   }
 
@@ -313,7 +306,7 @@ export class ReceiptsSession {
 
     const plan = finishPlan(task.plan.source === 'none' ? fallbackPlan(task.startedAt) : task.plan, now)
     const totalMs = Math.max(0, now - task.startedAt)
-    this.last = { plan, totalMs, receipt: line }
+    this.last = { plan, prompt: task.prompt, totalMs, receipt: line, isAborted: e.isAborted }
 
     // A task-tool plan finished only when every item did; a derived or
     // fallback plan finished when the turn answered.
@@ -360,7 +353,9 @@ export class ReceiptsSession {
       isWorking: task !== null,
       showBasis: this.showBasis,
       calibration: calibrationLines(calibrationOf(this.history)),
-      finished: this.last ? { totalMs: this.last.totalMs, receipt: this.last.receipt } : null,
+      title: task ? task.prompt : (this.last?.prompt ?? ''),
+      elapsedMs: task ? Math.max(0, now - task.startedAt) : (this.last?.totalMs ?? 0),
+      finished: this.last ? { totalMs: this.last.totalMs, receipt: this.last.receipt, isAborted: this.last.isAborted } : null,
     }
   }
 
@@ -379,9 +374,34 @@ export class ReceiptsSession {
     return this.cwd
   }
 
-  /** The band shows while a task runs and no pane is placed. */
+  /**
+   * The band shows while a task runs, and after it as the completion card
+   * until the next prompt, whenever no pane is placed.
+   */
   isBandWanted(): boolean {
-    return this.task !== null && !this.isPaneShown
+    return (this.task !== null || this.last !== null) && !this.isPaneShown
+  }
+
+  get isWorking(): boolean {
+    return this.task !== null
+  }
+
+  /** The user's switch for the spike, over the userConfig default. */
+  setSpike(isOn: boolean): void {
+    this.options.spike = isOn
+  }
+
+  get isSpikeOn(): boolean {
+    return this.options.spike
+  }
+
+  /** The effort level the last main-loop model request carried. */
+  noteEffort(effort: string | number | undefined): void {
+    if (typeof effort === 'string') this.effort = effort
+  }
+
+  get effortLevel(): string | undefined {
+    return this.effort
   }
 
   paneDrawn(): void {
