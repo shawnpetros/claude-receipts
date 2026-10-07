@@ -4,7 +4,7 @@ A Claude Code mod that replaces the wall of tool calls with a progress view that
 
 It does three jobs:
 
-1. **Milestones instead of tool walls.** A bordered band directly above the prompt shows what the turn is working on, what's finished and what's left. While the turn runs, ordinary tool rows draw nothing at all. The rows that matter still show, one dim line each with how they ended: the first edit of each file, test and build runs, commits, pull requests, and finished subagents.
+1. **Milestones instead of tool walls.** A bordered band directly above the prompt shows what the turn is working on, what's finished and what's left. Ordinary tool rows draw nothing at all, during the turn and after it. The rows that matter still show, one dim line each with how they ended: the first edit of each file, test and build runs, commits, pull requests, and finished subagents.
 2. **An estimate that learns and doesn't lie.** It stays indeterminate until there's a basis. Then it shows a range, names where the range comes from, and shows how often its past ranges were right. The range narrows as steps finish.
 3. **Receipts.** When the turn ends, if the answer claims done and nothing verified the work after the last edit, a line says so under the answer. If something did, the line shows what ran and how it went.
 
@@ -37,7 +37,7 @@ When the elapsed time passes the top of the range, the border and bar turn grey 
 
 Below 110 columns the per-step bars drop and each step keeps its word. Nothing in the band is ever wider than the terminal.
 
-`[-]` on the title row folds the band to that one row, and `[+]` opens it again. Claude Code draws its own `[-]` just outside the border, and that one hides the whole band.
+`[▾]` on the title row folds the band to that one row, and `[▸]` opens it again. Claude Code draws its own `[-]` just outside the border, and that one hides the whole band.
 
 ### Keys
 
@@ -109,7 +109,9 @@ In the pane, `c` toggles clean view and `b` shows where the estimate comes from.
 
 Clean view is on by default. Tool rows draw as one dim line each, such as `● Edit src/x.ts`, and milestone rows draw in full.
 
-Suppression is also on by default and goes further while a turn runs. Ordinary tool rows, their results and folded groups draw nothing. Each milestone becomes one dim line with how it ended, such as `● Bash bun test ✓`. Your messages and the assistant's text always draw. When the turn ends, the rows come back as clean view's dim lines.
+Suppression is also on by default and goes further. Ordinary tool rows, their results and folded groups draw nothing, during the turn and after it. Each milestone becomes one dim line with how it ended, such as `● Bash bun test ✓`. Your messages and the assistant's text always draw. A finished turn leaves your prompt, the assistant's answer and the completion card.
+
+Turn suppression off and the rows show as clean view's dim lines instead.
 
 Turn either one off in the settings popover. With clean view off, every row draws exactly as Claude Code draws it.
 

@@ -72,7 +72,7 @@ describe('band layout (pure)', () => {
     expect(rows).toHaveLength(2 + 4)
     for (const row of rows) expect([...row].length, row).toBe(innerWidthOf(columns))
     expect(rows[0]).toMatch(/^✶ Build a weather dashboard/)
-    expect(rows[0]).toMatch(/13s \[-\]$/)
+    expect(rows[0]).toMatch(/13s \[▾\]$/)
     expect(rows[1]).toMatch(/^Step 2 of 4 /)
     expect(rows[1]).toMatch(/35% {2}~4 to 9 min · from 3 similar tasks$/)
     // Per-step rows: a 12-cell mini bar and a state word
@@ -102,7 +102,7 @@ describe('band layout (pure)', () => {
   test('collapsed: the title row alone, with the expand mark', () => {
     const rows = textsOf(bandView(workingOf(), 155, { ...OPTIONS, collapsed: true }))
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatch(/\[\+\]$/)
+    expect(rows[0]).toMatch(/\[▸\]$/)
   })
 
   test('the estimate is honest in the band: indeterminate, over by, basis named', () => {
@@ -134,7 +134,7 @@ describe('completion card (pure)', () => {
     expect(view.tone).toBe('done')
     expect(view.border).toBe('success')
     expect(rows[0]).toMatch(/^ ✓ All done  Build a weather/)
-    expect(rows[0]).toMatch(/took 1m 47s \[-\]$/)
+    expect(rows[0]).toMatch(/took 1m 47s \[▾\]$/)
     expect(rows[1]).toMatch(/^4 of 4 steps ━+ 100%$/)
     for (const row of rows.slice(2)) expect(row).toMatch(/^✓ .+█{12} {2}Done/)
   })
@@ -192,7 +192,7 @@ describe('band in the session', () => {
     await ui.unmount()
     const remounted = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
     expect(await remounted.find({ key: 'summary' })).toBeUndefined()
-    expect(await remounted.find({ key: 'collapse', text: '[+]' })).toBeDefined()
+    expect(await remounted.find({ key: 'collapse', text: '[▸]' })).toBeDefined()
     await remounted.press({ key: 'collapse' })
     expect(await remounted.find({ key: 'summary' })).toBeDefined()
   })

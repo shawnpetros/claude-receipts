@@ -23,14 +23,16 @@ Claude Code, overloaded_prompt 77%, outcome partial 26%.
 
 - The `AbovePrompt` band is the primary surface (revised 2026-10-07; the auto-opened dock pane took a
   third of a fullscreen terminal for four lines). A round-bordered block: title row (prompt, elapsed,
-  `[-]`), a summary row (step i of n, a step-weighted bar, percent, the estimate range with its basis),
+  `[▾]` to fold it, `[▸]` folded; never `[-]`, Claude Code's own mark beside the band that hides it
+  whole), a summary row (step i of n, a step-weighted bar, percent, the estimate range with its basis),
   one row per step (12-cell bar and a state word, six at most, then `+n more`). Below 110 columns the
   step bars drop. On turn end it becomes the completion card (green, or warning when UNVERIFIED or a
   check failed) until the next prompt. `Pane` opens only on `/receipts`.
 - `ui.render` on `ToolUse`, `ToolResult`, `ToolGroup` rows: when clean view is on, draw one dim line
   per call (`● Edit src/x.ts`, `⎿ 12 lines`) instead of the full block. Milestone events draw normally.
-  Suppression (on by default) goes further while a turn runs: plain rows draw nothing, milestone
-  events one dim line each with their outcome.
+  Suppression (on by default) goes further, during the turn and after it: plain rows draw nothing,
+  milestone events one dim line each with their outcome. What remains is the user's prompt, the
+  assistant's text and the band. Clean view's dim lines show only with suppression off.
 - Settings popover in the band (`t`, `/receipts tools`): model and effort chips, switches for clean
   view, the spike and suppression. Drawn in the band because a `Pane` cannot ask to be inline.
 - `turn.complete` `{ text }`: one receipt line under the answer.
@@ -129,7 +131,8 @@ turn; this is a mirror, not a gate, in v1.
 - Band: at 160 and 100 cols, title + summary + one row per step, every row exactly the inner width;
   step bars only at ≥110; collapse leaves the title row; the completion card recolours with its badge
   variants; no pane opens unasked.
-- Suppression: plain tool rows draw nothing mid-turn, milestones one dim line, full after the toggle.
+- Suppression: plain tool rows draw nothing during and after the turn, milestones one dim line, full
+  after the clean view toggle.
 - Popover: the current model highlighted; a pick goes through the /config row, else /model.
 
 ## 7. Out of scope v1

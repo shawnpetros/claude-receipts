@@ -194,7 +194,9 @@ function stepCounterOf(plan: Plan | null): string {
 function titleRow(model: ViewModel, width: number, options: BandOptions, tone: BandTone, verdict: Verdict): Row {
   const title = model.title.replace(/\s+/g, ' ').trim() || 'continuing'
   const buttons = [buttonSeg('basis', 'basis', 'b'), space(2), buttonSeg('tools-toggle', 'tools', 't'), space(2)]
-  const collapse = buttonSeg('collapse', options.collapsed ? '[+]' : '[-]', undefined, false)
+  // Not [-]: Claude Code draws its own [-] beside the band, which hides it
+  // whole; this one folds to the title row
+  const collapse = buttonSeg('collapse', options.collapsed ? '[▸]' : '[▾]', undefined, false)
   if (tone === 'working' || tone === 'over') {
     const left: Seg[] = [{ text: '✶ ', color: ACCENT, bold: true }, { text: title, bold: true, grow: true }]
     return { key: 'title', segs: line(width, left, [...buttons, { text: durationOf(model.elapsedMs) }, space(1), collapse]) }
@@ -451,7 +453,7 @@ export function toolsView(model: ToolsModel, width: number): Row[] {
     { key: 'tools-rule', segs: ruleOf(`── ${spaced('settings')} `, width) },
     settingRow('set-clean', 'Clean view', 'one line per tool row', model.cleanView, width),
     settingRow('set-spike', 'Spike', 'sizing subagent, new tasks', model.spike, width),
-    settingRow('set-suppress', 'Suppress tool rows', 'hide them mid-turn', model.suppress, width),
+    settingRow('set-suppress', 'Suppress tool rows', 'hide them, keep milestones', model.suppress, width),
   ]
 }
 

@@ -16,21 +16,15 @@ import { paneLines, toolGroupText, toolResultText, toolRowText, type Line } from
 const cleanView = atom({ plugin: 'receipts', key: 'cleanView' }, true)
 
 /**
- * Suppression, on top of clean view: while a turn runs, plain tool rows draw
- * nothing and milestone rows one dim line each; the band carries progress.
+ * Suppression, on top of clean view: plain tool rows draw nothing and
+ * milestone rows one dim line each, during the turn and after it, so the
+ * transcript keeps the assistant's text and the band carries the rest.
  * Drawing only, as clean view (invariant 4). Milestones still show
  * (invariant 5), folded to a line with their outcome.
  */
 const suppress = atom({ plugin: 'receipts', key: 'suppress' }, true)
 
-/**
- * Whether a main-loop turn is running. Tool rows read it so they redraw once
- * at each turn edge (suppressed while it runs, clean view after), not on
- * every tick.
- */
-const working = atom({ plugin: 'receipts', key: 'working' }, false)
-
-/** The band folded to its title row by its own `[-]`. */
+/** The band folded to its title row by its own `[▾]` (`[▸]` folded). */
 const collapsed = atom({ plugin: 'receipts', key: 'collapsed' }, false)
 
 /** The settings popover, drawn in the band. */
@@ -187,7 +181,6 @@ export function register(on: On, options: PluginOptions): void {
 
   on('turn.start', async ($, e, next) => {
     await session.turnStart(hostOf($), e.turnId, e.text)
-    await update($, working, () => true)
     return next(e)
   })
 
@@ -213,7 +206,6 @@ export function register(on: On, options: PluginOptions): void {
       return result
     }
     const line = await session.turnComplete(hostOf($), e)
-    await update($, working, () => false)
     if (!line) return result
     const isOwnText = result.text !== '' && result.text !== e.answer
     return { ...result, text: isOwnText ? `${result.text}\n${line}` : line }
@@ -377,7 +369,7 @@ export function register(on: On, options: PluginOptions): void {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (!(await read($, cleanView))) return next(e)
     const isMilestone = session.isMilestoneRow(e.props.tool_use_id, e.props.tool, e.props.input)
-    const isSuppressed = (await read($, suppress)) && (await read($, working))
+    const isSuppressed = await read($, suppress)
     const { Box, Text } = $.ui.resolve(e)
     if (isSuppressed) {
       if (!isMilestone) return Box({})
@@ -392,7 +384,7 @@ export function register(on: On, options: PluginOptions): void {
     if (!(await read($, cleanView))) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     // Suppressed, a milestone's outcome is folded into its ToolUse line
-    if ((await read($, suppress)) && (await read($, working))) return Box({})
+    if (await read($, suppress)) return Box({})
     if (session.isMilestoneRow(e.props.tool_use_id, e.props.tool, undefined)) return next(e)
     return Text({ dimColor: true, wrap: 'truncate-end', children: [toolResultText(e.props.output, e.props.isErrored)] })
   })
@@ -400,7 +392,7 @@ export function register(on: On, options: PluginOptions): void {
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
     if (e.props.isExpanded || !(await read($, cleanView))) return next(e)
     const { Box, Text } = $.ui.resolve(e)
-    if ((await read($, suppress)) && (await read($, working))) return Box({})
+    if (await read($, suppress)) return Box({})
     return Text({ dimColor: true, wrap: 'truncate-end', children: [toolGroupText(e.props.calls)] })
   })
 }

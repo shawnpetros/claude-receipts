@@ -98,7 +98,7 @@ describe('clean view', () => {
     expect(linesOf(await row.drawn())).toEqual([ENGINE])
   })
 
-  test('suppressed: plain tool rows draw nothing while the turn runs, milestones one dim line each', async ($, on) => {
+  test('suppressed: plain tool rows draw nothing during and after the turn, milestones one dim line each', async ($, on) => {
     const world = worldOf(on)
     await $.turn.start({ text: 'fix x', turnId: 's1' })
     await $.tool.call({ tool: 'Read', file_path: '/work/src/a.ts' })
@@ -143,11 +143,14 @@ describe('clean view', () => {
     })
     expect(linesOf(await verifyResult.drawn())).toEqual([])
 
-    // Once the turn ends, plain rows come back as clean view's one dim line
+    // Once the turn ends they stay suppressed: the answer and the card remain
     await $.turn.complete({ turnId: 's1', answer: 'ok', durationMs: 1, isAborted: false, reason: 'answer' })
     await read.unmount()
     const after = await $.ui.mount({ ...toolRowOf(readId!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
-    expect(linesOf(await after.drawn())).toEqual(['● Read src/a.ts'])
+    expect(linesOf(await after.drawn())).toEqual([])
+    await edit.unmount()
+    const editAfter = await $.ui.mount({ ...toolRowOf(editId!, 'Edit', { file_path: '/work/src/x.ts' }), surface: 'terminal' })
+    expect(linesOf(await editAfter.drawn())).toEqual(['● Edit src/x.ts ✓'])
 
     // And the toggle restores every row in full
     await flip($ as never, 'set-clean')
@@ -156,7 +159,7 @@ describe('clean view', () => {
     expect(linesOf(await full.drawn())).toEqual([ENGINE])
   })
 
-  test('suppression off: rows are clean view\'s dim lines even mid-turn', async ($, on) => {
+  test('suppression off: rows are clean view\'s dim lines, mid-turn and after', async ($, on) => {
     const world = worldOf(on)
     await flip($ as never, 'set-suppress')
     await $.turn.start({ text: 'fix x', turnId: 's2' })

@@ -4,10 +4,8 @@ declare module 'claude-code' {
     receipts: {
       /** Tool rows drawn as one dim line each; milestone rows always in full. */
       cleanView: boolean
-      /** While a turn runs, plain tool rows draw nothing and milestones one dim line. */
+      /** Plain tool rows draw nothing and milestones one dim line, during the turn and after. */
       suppress: boolean
-      /** A main-loop turn is running; tool rows redraw at each turn edge. */
-      working: boolean
       /** The band folded to its title row. */
       collapsed: boolean
       /** The settings popover is open in the band. */
