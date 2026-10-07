@@ -65,6 +65,8 @@ export type RangeEstimate = {
   /** Fraction done, weighted by expected step durations. */
   progress: number
   samples: number
+  /** Each plan step's own fraction done, in plan order: 1 done, 0 not started. */
+  stepProgress: readonly number[]
 }
 
 export type Estimate = { kind: 'indeterminate' } | RangeEstimate
@@ -103,7 +105,7 @@ function totalMode(input: EstimateInput, elapsed: number): RangeEstimate {
   const remMean = Math.max(exp.mean - elapsed, MIN_LEFT_RATIO * exp.mean)
   const plannedHigh = exp.mean + K * exp.sd
   const progress = Math.min(elapsed / exp.mean, 0.95)
-  return rangeOf({ elapsed, remMean, sigma: exp.sd, plannedHigh, progress, basis, suffix: '' })
+  return rangeOf({ elapsed, remMean, sigma: exp.sd, plannedHigh, progress, basis, suffix: '', stepProgress: input.plan.items.map(() => progress) })
 }
 
 /**
@@ -125,6 +127,7 @@ function stepMode(input: EstimateInput, elapsed: number): RangeEstimate {
   let plannedEnd: number | null = null
   let pendingMean = 0
   let previousEnd = startedAt
+  const stepProgress: number[] = []
 
   items.forEach((item, i) => {
     const exp = basis.bucket ? stepExpectation(basis.bucket, i, stepCount, basis.samples) : priorOf(DEFAULT_STEP)
@@ -132,6 +135,7 @@ function stepMode(input: EstimateInput, elapsed: number): RangeEstimate {
     if (item.state === 'done') {
       doneWeight += exp.mean
       previousEnd = item.doneAt ?? previousEnd
+      stepProgress.push(1)
       return
     }
     remVar += exp.sd * exp.sd
@@ -140,18 +144,20 @@ function stepMode(input: EstimateInput, elapsed: number): RangeEstimate {
       const inStep = Math.max(0, now - start)
       remMean += Math.max(exp.mean - inStep, MIN_LEFT_RATIO * exp.mean)
       doneWeight += Math.min(inStep / exp.mean, 0.95) * exp.mean
+      stepProgress.push(Math.min(inStep / exp.mean, 0.95))
       plannedEnd = Math.max(plannedEnd ?? -Infinity, start + exp.mean)
       return
     }
     remMean += exp.mean
     pendingMean += exp.mean
+    stepProgress.push(0)
   })
 
   const sigma = Math.sqrt(remVar)
   const plannedHigh = (plannedEnd ?? now) - startedAt + pendingMean + K * sigma
   const progress = totalWeight > 0 ? doneWeight / totalWeight : 0
   const suffix = plan.source === 'derived' ? ' · derived plan' : ''
-  return rangeOf({ elapsed, remMean, sigma, plannedHigh, progress, basis, suffix })
+  return rangeOf({ elapsed, remMean, sigma, plannedHigh, progress, basis, suffix, stepProgress })
 }
 
 function rangeOf(args: {
@@ -162,6 +168,7 @@ function rangeOf(args: {
   progress: number
   basis: Basis
   suffix: string
+  stepProgress: readonly number[]
 }): RangeEstimate {
   const { elapsed, remMean, sigma, plannedHigh, progress, basis } = args
   const isOver = elapsed > plannedHigh
@@ -184,6 +191,7 @@ function rangeOf(args: {
     overByMs,
     progress: Math.max(0, Math.min(1, progress)),
     samples: n,
+    stepProgress: args.stepProgress,
   }
 }
 

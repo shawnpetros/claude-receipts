@@ -1,5 +1,6 @@
 /**
- * What the pane, the band and the clean-view rows say, as plain text lines.
+ * What the pane and the clean-view rows say, as plain text lines, and the
+ * view model the band draws from (the band itself is band.ts).
  * `hooks/register.ts` turns each line into a Text element; nothing here knows
  * about elements or `$`.
  */
@@ -23,12 +24,15 @@ export type ViewModel = {
   isWorking: boolean
   showBasis: boolean
   calibration: readonly string[]
-  /** Set once a task finished: how long it took and its receipt line. */
-  finished: { totalMs: number; receipt: string | null } | null
+  /** The user's prompt for the task shown, as typed. */
+  title: string
+  /** Time since the task shown started. */
+  elapsedMs: number
+  /** Set once a task finished: how long it took, its receipt line, and whether it was cut short. */
+  finished: { totalMs: number; receipt: string | null; isAborted: boolean } | null
 }
 
 export const BAR_WIDTH = 24
-const BAND_BAR_WIDTH = 12
 
 /**
  * Cut to `columns` code points, with an ellipsis when cut.
@@ -105,30 +109,6 @@ export function paneLines(model: ViewModel): Line[] {
     lines.push({ key: `cal-${i}`, text, ...(i === 0 ? { dim: true } : { color: 'yellow' }) }),
   )
   return lines
-}
-
-/**
- * The band above the prompt when no pane is placed: the same content, three
- * rows at most, none wider than `columns`.
- */
-export function bandLines(model: ViewModel, columns: number): Line[] {
-  const lines: Line[] = []
-  const plan = model.plan
-  const current = plan?.items.findIndex(item => item.state === 'current') ?? -1
-  if (plan && plan.items.length > 0 && plan.source !== 'fallback') {
-    const index = current === -1 ? plan.items.filter(item => item.state === 'done').length : current
-    const item = plan.items[Math.min(index, plan.items.length - 1)]!
-    const tag = plan.source === 'derived' ? ' (derived)' : ''
-    lines.push({ key: 'band-step', text: `▸ ${index + 1}/${plan.items.length}${tag} ${item.label}`, bold: true })
-  } else {
-    lines.push({ key: 'band-step', text: '▸ working · no plan yet', bold: true })
-  }
-  if (model.estimate) {
-    const progress = model.estimate.kind === 'range' ? model.estimate.progress : 0
-    lines.push({ key: 'band-estimate', text: `${barOf(progress, BAND_BAR_WIDTH)} ${estimateRow(model.estimate)}` })
-  }
-  if (model.calibration[0]) lines.push({ key: 'band-cal', text: model.calibration[0], dim: true })
-  return lines.slice(0, 3).map(line => ({ ...line, text: truncate(line.text, columns) }))
 }
 
 function fieldOf(input: unknown, name: string): string | undefined {
