@@ -26,18 +26,29 @@ Claude Code, overloaded_prompt 77%, outcome partial 26%.
   `[▾]` to fold it, `[▸]` folded; never `[-]`, Claude Code's own mark beside the band that hides it
   whole), a summary row (step i of n, a step-weighted bar, percent, the estimate range with its basis),
   one row per step (12-cell bar and a state word, six at most, then `+n more`). Below 110 columns the
-  step bars drop. On turn end it becomes the completion card (green, or warning when UNVERIFIED or a
-  check failed) until the next prompt. `Pane` opens only on `/receipts`.
-- `ui.render` on `ToolUse`, `ToolResult`, `ToolGroup` rows: when clean view is on, draw one dim line
-  per call (`● Edit src/x.ts`, `⎿ 12 lines`) instead of the full block. Milestone events draw normally.
-  Suppression (on by default) goes further, during the turn and after it: plain rows draw nothing,
-  milestone events one dim line each with their outcome. What remains is the user's prompt, the
-  assistant's text and the band. Clean view's dim lines show only with suppression off.
-- Settings popover in the band (`t`, `/receipts tools`): model and effort chips, switches for clean
-  view, the spike and suppression. Drawn in the band because a `Pane` cannot ask to be inline.
+  step bars drop. On every main-loop `turn.complete` it leaves Working and becomes the completion
+  card until the next prompt: green `✓ All done` only when every step is done; grey `■ Turn ended ·
+  k of n steps reached` with the rest `Not reached` otherwise; warning when UNVERIFIED or a check
+  failed; grey `■ Stopped` when aborted. Agents the main loop started that are still running at turn
+  end show as `waiting on n agents` (from `$.agent.list()`), counted down on each one's
+  `turn.complete`, cleared on the next `turn.start`. `Pane` opens only on `/receipts`.
+- Rows level, `off | clean | quiet`, default quiet (0.2.1; replaces the clean-view and suppression
+  switches). `clean`: `ToolUse`, `ToolResult`, `ToolGroup` draw one dim line per call
+  (`● Edit src/x.ts`, `⎿ 12 lines`); milestone events draw normally. `quiet`, during the turn and
+  after it: plain tool rows draw nothing, milestone events one dim line each with their outcome;
+  `Spinner` nothing; `ToolProgress`, `TurnDuration`, `InfoNotice`, `CommandOutput` (not this mod's,
+  not an error) nothing while working; a `UserMessage` that is not the person's prompt (a hand-back,
+  a peer, a notification) nothing while working and one dim line after; `AssistantMessage` blocks
+  seen mid-turn their first line, dim, except the final answer, which redraws in full on
+  `turn.complete`. Rows ctrl+o expands (`isExpanded`) draw in full. `AskUserQuestion` and permission
+  prompts are never hooked.
+- Settings popover in the band (`t`, `/receipts tools`): model, effort and rows chips, a switch for
+  the spike. Drawn in the band because a `Pane` cannot ask to be inline.
 - `turn.complete` `{ text }`: one receipt line under the answer.
-- Buttons: `clean view on/off`, `estimate basis`, `park` (no-op placeholder for a later mod; hidden).
-- Commands: `/receipts` (toggle pane), `/receipts tools`, `/receipts stats` (calibration history),
+- Buttons: `clean view on/off` (rows level off and back), `estimate basis`, `park` (no-op placeholder
+  for a later mod; hidden).
+- Commands: `/receipts` (toggle pane), `/receipts tools`, `/receipts rows [off|clean|quiet]`,
+  `/receipts clean`, `/receipts basis`, `/receipts stats` (calibration history),
   `/receipts reset-history`.
 
 ## 2. Milestones
@@ -75,7 +86,8 @@ while it is the only basis. Can be turned off in userConfig.
 **Display rules** (the honesty contract):
 - `indeterminate` only while there is no plan AND no history. Hard cap: by the first completed milestone
   or 90 seconds, whichever first, show a range from the global prior.
-- Always a range, never a point: `~4 to 9 min`. Basis always named: `from 7 similar tasks`,
+- Always a range, never a point: `~4 to 9 min`. The low end never shows 0 (`~0 to 10 min` is a range in
+  name only); it floors at 1 min or 5 sec. Basis always named: `from 7 similar tasks`,
   `spike guess`, `prior only`, `derived plan`.
 - Countdown digits appear only when confidence ≥ 0.5; below that show the range and a bar.
 - When elapsed exceeds the range: `over by 2m 10s`, the bar turns dim, the estimate re-widens using
@@ -104,7 +116,7 @@ turn; this is a mirror, not a gate, in v1.
 3. **Basis always named, calibration always shown.** The mod reports its own hit rate; a bad score is
    displayed, not hidden. (Revised 2026-10-07: a passing score moved behind `b` to keep the band small;
    a failing one stays on the band.)
-4. **Clean view hides rendering only.** The transcript rows are untouched; toggling off shows everything.
+4. **The rows level hides rendering only.** The transcript rows are untouched; level off shows everything.
    Scar: the original /buddy main-model leak; a mod rewriting content is a different and riskier thing.
 5. **Milestone events are never hidden.** Edits, verify runs with exit code, commits, PRs.
 6. **Hooks return fast.** Any model call is awaited off the hot path (10s hook cap; keep under 2s).
@@ -112,6 +124,10 @@ turn; this is a mirror, not a gate, in v1.
 7. **No network except the model API and the subagent.** No telemetry of its own.
 8. **Store stays under 1 MiB** by pruning oldest tasks first.
 9. **A derived plan is labelled derived.** The mod never presents its own guess as the assistant's plan.
+10. **The card never claims more than happened.** On every main-loop turn end the band leaves Working;
+    green "All done" only when every step is done, otherwise "Turn ended · k of n steps reached" and
+    "Not reached" on the rest. Scar: the 0.2.0 live run, where a derived plan ended with 2 of 5 steps
+    reached and the card drew green "All done" over the three that never ran.
 
 ## 6. Adversarial tests (claude plugin test, write first)
 

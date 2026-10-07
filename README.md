@@ -4,7 +4,7 @@ A Claude Code mod that replaces the wall of tool calls with a progress view that
 
 It does three jobs:
 
-1. **Milestones instead of tool walls.** A bordered band directly above the prompt shows what the turn is working on, what's finished and what's left. Ordinary tool rows draw nothing at all, during the turn and after it. The rows that matter still show, one dim line each with how they ended: the first edit of each file, test and build runs, commits, pull requests, and finished subagents.
+1. **Milestones instead of tool walls.** A bordered band directly above the prompt shows what the turn is working on, what's finished and what's left. At the default quiet level, ordinary tool rows draw nothing, during the turn and after it, and so does most of the chrome a turn scatters. The rows that matter still show, one dim line each with how they ended: the first edit of each file, test and build runs, commits, pull requests, and finished subagents.
 2. **An estimate that learns and doesn't lie.** It stays indeterminate until there's a basis. Then it shows a range, names where the range comes from, and shows how often its past ranges were right. The range narrows as steps finish.
 3. **Receipts.** When the turn ends, if the answer claims done and nothing verified the work after the last edit, a line says so under the answer. If something did, the line shows what ran and how it went.
 
@@ -18,6 +18,17 @@ claude --plugin-dir ~/projects/claude-receipts
 
 That loads the mod for one session. Nothing opens by itself: the band appears above the prompt when you send a prompt. `/receipts` opens a pane with the long view if you want it.
 
+Or install it from its marketplace:
+
+```bash
+claude plugin marketplace add shawnpetros/claude-receipts
+claude plugin install receipts@claude-receipts
+```
+
+Use one or the other, not both. With `--plugin-dir` and the installed copy in one session, two copies of the mod draw the same band and keep separate state.
+
+To check that it's learning, finish a turn and run `/receipts stats`. The count of finished tasks should go up by one.
+
 ## The band
 
 While a turn runs, the band has an orange border and these rows:
@@ -26,12 +37,18 @@ While a turn runs, the band has an orange border and these rows:
 - **Summary.** `Step 2 of 4`, a full-width bar, the percent done, then the estimate in dim text with its basis, such as `~4 to 9 min · from 3 similar tasks`. The percent is weighted by how long each step is expected to take.
 - **One row per step.** A 12-cell bar for the step and a word: `Working`, `Next`, `Later` or `Done`. At most six steps show, around the current one, then `+n more`.
 
-When the turn ends, the band turns into a completion card and stays until your next prompt:
+When the turn ends, the band always leaves the working state. It becomes a completion card and stays until your next prompt:
 
+- **All done.** A green border and a `✓ All done` badge, only when every step finished. A task-tool plan counts as finished when every task is completed.
+- **Turn ended short.** A grey `■ Turn ended · 2 of 5 steps reached` badge when steps were left. Those steps read `Not reached`, never `Done`.
 - **Verified.** A green border and a `✓ All done · bun test 152 pass` badge, every step ticked with a full bar, and `took 1m 47s` on the right.
 - **Unverified.** A yellow border and a `⚠ Done, unverified` badge. The title row shows the receipt, such as `claimed done, no test/build/run after the last edit (src/x.ts at 14:02)`. When that doesn't fit, it shortens to the file and time first.
 - **A failed check.** A yellow `✗ Done, checks failed` badge and the run that failed.
 - **Stopped.** A grey `■ Stopped` badge when you interrupt the turn.
+
+If agents the turn started are still running when it ends, the title row says `waiting on 2 agents`. The count drops as each one finishes, and the next prompt clears it.
+
+A plan the mod derived marks a step done only when a small model says the assistant's latest message finished it. So a derived plan often ends short of its last steps even when the work is done. The card says how far the plan got rather than guess.
 
 When the elapsed time passes the top of the range, the border and bar turn grey and the summary reads `over by 2m 10s · ~1 to 4 min more`. Running long isn't an error, so it's never red.
 
@@ -54,7 +71,10 @@ Click the band, or press ctrl+x then tab, to give it the keyboard. Then:
 
 - **M O D E L.** Haiku, Sonnet, Opus and Fable. The current model is highlighted. Picking one sets the `/config` model row when this build has one that takes it, and otherwise runs `/model <name>`.
 - **E F F O R T.** Low, Medium, High, XHigh and Max, the same way, through `/effort`. The current level is highlighted once a model request has carried it.
-- **S E T T I N G S.** On and Off switches for clean view, the spike and suppressing tool rows. Your plugin settings can't change while a session runs, so these switches override them for the rest of the session. `/clear` puts your settings back.
+- **R O W S.** Off, Clean or Quiet: how much of the transcript the mod draws away. See below.
+- **S E T T I N G S.** An On and Off switch for the spike.
+
+Your plugin settings can't change while a session runs, so these choices override them for the rest of the session. `/clear` puts your settings back.
 
 The `[-]` at the top right closes it, as does `t` again. Escape only hands the keyboard back to the prompt, because Claude Code tells a mod nothing when you press it.
 
@@ -70,7 +90,7 @@ These are the rules the estimate follows. Each one exists because some tool, som
 - **Running over is reported.** When elapsed time passes the top of the range, the row reads `over by 2m 10s`, the bar dims, and the range widens with elapsed time as its floor. It never resets to indeterminate.
 - **The progress bar is weighted by time.** It weights each step by how long that step is expected to take, not by the count of steps.
 - **A derived plan is labelled.** When the assistant didn't make a task list, the mod asks a small model for one and marks it `derived`. The mod never passes its own guess off as the assistant's plan.
-- **Clean view and suppression only change drawing.** The transcript is never modified. Turn clean view off and every row is back exactly as it was.
+- **The rows level only changes drawing.** The transcript is never modified. Set it to Off and every row is back exactly as it was.
 - **The receipt reports and never blocks.** It never stops a turn or holds one back. The worst it does is wait up to 1.5 seconds for a label.
 
 ## How the estimate works
@@ -100,22 +120,35 @@ A small model decides whether the answer claims done. If its label isn't back wi
 | :- | :- |
 | `/receipts` | Opens or closes the pane, the long view with the calibration line |
 | `/receipts tools` | Opens the settings popover in the band |
+| `/receipts rows [off\|clean\|quiet]` | Sets the rows level, or steps to the next one with no argument |
+| `/receipts clean` | Switches the rows level to Off, and back to what it was |
+| `/receipts basis` | Shows or hides the basis tooltip, as `b` does |
 | `/receipts stats` | Shows the calibration history and task counts by type, with median durations |
 | `/receipts reset-history` | Forgets every learned task |
 
-In the pane, `c` toggles clean view and `b` shows where the estimate comes from.
+In the pane, `c` switches the rows level to Off and back, and `b` shows where the estimate comes from.
 
-## Clean view and suppression
+## Rows level
 
-Clean view is on by default. Tool rows draw as one dim line each, such as `● Edit src/x.ts`, and milestone rows draw in full.
+The rows level sets how much of the transcript the mod draws away. Quiet is the default.
 
-Suppression is also on by default and goes further. Ordinary tool rows, their results and folded groups draw nothing, during the turn and after it. Each milestone becomes one dim line with how it ended, such as `● Bash bun test ✓`. Your messages and the assistant's text always draw. A finished turn leaves your prompt, the assistant's answer and the completion card.
+| Level | What draws |
+| :- | :- |
+| Off | Every row exactly as Claude Code draws it |
+| Clean | Tool rows as one dim line each, such as `● Edit src/x.ts`. Milestone rows in full. |
+| Quiet | See below |
 
-Turn suppression off and the rows show as clean view's dim lines instead.
+Quiet goes further:
 
-Turn either one off in the settings popover. With clean view off, every row draws exactly as Claude Code draws it.
+- **Tool rows.** Ordinary tool rows, their results and folded groups draw nothing, during the turn and after it. Each milestone becomes one dim line with how it ended, such as `● Bash bun test ✓`.
+- **The spinner.** It draws nothing, because the band already shows the elapsed time and the step.
+- **While a turn runs.** Progress pills, the turn-duration line, status notices and other commands' output draw nothing. This mod's own output and any error line always show.
+- **Hand-backs.** A subagent's hand-back, a message from another session or a task notification draws nothing while the turn runs. After the turn it draws one dim line, such as `↳ message from @Explore: Found 3 mods`.
+- **Assistant text.** Text between tool calls draws as its first line, dim. The final answer draws in full once the turn completes.
 
-ctrl+o still expands a folded group of reads and searches, because a group's drawing says when it's expanded. It can't expand a single tool row past clean view, because Claude Code doesn't tell a mod when one is expanded. Turn clean view off to see those rows in full.
+Your own prompts always draw in full. Quiet never touches a question the assistant asks you or a permission prompt.
+
+ctrl+o is the escape hatch. It shows the full transcript, and a hand-back row it expands draws in full. ctrl+o also expands a folded group of reads and searches. A single tool row or a block of assistant text can't be expanded past the level, because Claude Code doesn't tell a mod when one is expanded. Set the level to Off to see those in full.
 
 ## Configuration
 
@@ -124,7 +157,7 @@ Set these under `pluginConfigs` in your Claude Code settings. Use the key `recei
 | Key | Default | What it does |
 | :- | :- | :- |
 | `spike` | `true` | Allows the sizing subagent for unfamiliar tasks. Set it to `false` and the mod never spawns one. |
-| `cleanView` | `true` | Starts each session with tool rows collapsed. The popover and the pane still toggle it. |
+| `cleanView` | `true` | Starts each session at the quiet rows level. Set it to `false` to start at Off. The popover and `/receipts rows` change it for the session. |
 
 ## What it reaches
 
