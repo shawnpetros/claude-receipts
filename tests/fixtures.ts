@@ -58,7 +58,7 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
     saved.delete(e.key)
     return { value: undefined }
   })
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', ($, e) => {
     world.opens.push(e)
     return { value: options.isWide === false ? { isPlaced: false, reason: 'narrow' } : { isPlaced: true } }
@@ -68,7 +68,7 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
   on('session.cwd', () => ({ value: '/work' }))
   on('session.root', () => ({ value: '/work' }))
   on('session.repo', () => ({ value: { root: '/work', remote: null, internal: false, name: null } }))
-  on('fs.list', () => ({ value: [{ name: 'tests', kind: 'directory', size: 0, isLink: false }] }))
+  on('fs.list', () => ({ value: [{ name: 'tests', kind: 'dir', size: 0, isLink: false, mtimeMs: 0 }] }))
   on('model.classify', async ($, e) => {
     world.classifies.push([...e.labels])
     if (modelMs > 0) await clock.sleep(modelMs)
@@ -91,7 +91,7 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
   })
   on('agent.spawn', ($, e) => {
     world.spawns.push(e.prompt)
-    return { value: { model: 'haiku', agentId: 'spike-' + world.spawns.length } }
+    return { model: 'haiku', agentId: 'spike-' + world.spawns.length }
   })
   on('tool.call', ($, e) => {
     world.toolIds.push(e.tool_use_id)

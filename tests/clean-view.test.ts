@@ -76,11 +76,13 @@ describe('clean view', () => {
     expect(await pane.find({ key: 'clean-toggle', text: 'clean view on' })).toBeDefined()
     await pane.press({ key: 'clean-toggle' })
     expect(await pane.find({ key: 'clean-toggle', text: 'clean view off' })).toBeDefined()
+    await read.unmount()
     const again = await $.ui.mount({ ...toolRowOf(readId!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
     expect(linesOf(await again.drawn())).toEqual([ENGINE])
 
     // And back on
     await pane.press({ key: 'clean-toggle' })
+    await again.unmount()
     const third = await $.ui.mount({ ...toolRowOf(readId!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
     expect(linesOf(await third.drawn())).toEqual(['● Read src/a.ts'])
   })

@@ -55,6 +55,13 @@ describe('hook budget', () => {
     for (const [name, ms] of Object.entries(timings)) {
       expect(ms, `${name} took ${ms} ms of clock time`).toBeLessThan(2_000)
     }
+    // Stricter than the 2s cap: only turn.complete may wait on a model call
+    // (the claims-done label, deadline 1.5s); every other hook starts its
+    // model calls and returns without waiting on them.
+    for (const [name, ms] of Object.entries(timings)) {
+      if (name !== 'turn.complete') expect(ms, `${name} waited on a model call`).toBeLessThanOrEqual(50)
+    }
+    expect(timings['turn.complete']!).toBeLessThanOrEqual(1_550)
     // The model calls were made, just not on the hot path
     expect(world.completes.length).toBeGreaterThan(0)
     expect(world.classifies.length).toBeGreaterThan(0)
