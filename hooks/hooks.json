@@ -1,0 +1,4 @@
+{
+  "description": "receipts: milestones and a learning estimate in a pane (or a 3-row band), one dim line per tool row in clean view, and a receipt line under each answer that claims done",
+  "modules": ["./register.ts"]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "receipts",
+  "version": "0.1.0",
+  "description": "Milestones instead of tool walls, an estimate that learns and names its basis, and a receipt under every answer that claims done.",
+  "author": {
+    "name": "Shawn Petros"
+  },
+  "license": "MIT",
+  "types": "./.claude-plugin/types/index.d.ts",
+  "userConfig": {
+    "spike": {
+      "type": "boolean",
+      "title": "Spike unfamiliar tasks",
+      "description": "When a task shape has fewer than 3 past samples and the plan has 3 or more steps, spawn one cheap subagent per task to guess minutes per step. Counts as half a sample.",
+      "required": false,
+      "default": true
+    },
+    "cleanView": {
+      "type": "boolean",
+      "title": "Clean view on start",
+      "description": "Start each session with tool rows collapsed to one dim line each. Milestone events always draw in full.",
+      "required": false,
+      "default": true
+    }
+  }
+}
