@@ -103,8 +103,20 @@ describe('the claims-done false-positive counter', () => {
     await $.turn.complete({ turnId: 'w1', answer: 'Done.', durationMs: 1, isAborted: false, reason: 'answer' })
     expect((await run('wrong')).text).toMatch(/marked wrong/)
     expect((await run('wrong')).text).toMatch(/already/)
-    expect((await run('stats')).text).toMatch(/1 of 1 receipt marked wrong \(100%\)/)
+    expect((await run('stats')).text).toMatch(/claims-done false positives: 1 of 1 receipt \(100%\)/)
     expect(JSON.stringify(world.saved.get('audit'))).toMatch(/"wrong":1/)
+  })
+
+  test('/receipts wrong is about the current turn: a later turn with no receipt has nothing to mark', async ($, on) => {
+    worldOf(on, { claimsDone: true })
+    const run = (args: string) => $.command.run({ command: 'receipts', args } as never) as Promise<{ text?: string }>
+    await $.turn.start({ text: 'fix x', turnId: 'w2' })
+    await $.tool.call({ tool: 'Edit', file_path: '/work/src/x.ts', old_string: 'a', new_string: 'b' })
+    await $.turn.complete({ turnId: 'w2', answer: 'Done.', durationMs: 1, isAborted: false, reason: 'answer' })
+    await $.turn.start({ text: 'what does x do?', turnId: 'w3' })
+    await $.turn.complete({ turnId: 'w3', answer: 'It parses.', durationMs: 1, isAborted: false, reason: 'answer' })
+    expect((await run('wrong')).text).toMatch(/no receipt/)
+    expect((await run('stats')).text).toMatch(/claims-done false positives: 0 of 1 receipt \(0%\)/)
   })
 })
 
