@@ -1,0 +1,12 @@
+{
+  "name": "claude-receipts",
+  "owner": { "name": "Shawn Petros" },
+  "plugins": [
+    {
+      "name": "receipts",
+      "source": "./",
+      "description": "Milestone progress with an honest, learning estimate, suppressed tool rows, and a verify-before-done receipt.",
+      "version": "0.1.0"
+    }
+  ]
+}
