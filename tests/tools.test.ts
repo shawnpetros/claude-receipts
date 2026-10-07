@@ -16,15 +16,17 @@ describe('settings popover', () => {
   })
 
   test('the pure view: letter-spaced headers, the current model and effort highlighted, rows fit', () => {
-    const rows = toolsView({ model: 'claude-opus-5-5', effort: 'high', cleanView: true, spike: false, suppress: true }, 60)
+    const rows = toolsView({ model: 'claude-opus-5-5', effort: 'high', rows: 'quiet', spike: false }, 60)
     for (const row of rows) expect([...row.segs.map(seg => seg.text).join('')].length).toBeLessThanOrEqual(60)
     const text = rows.map(row => row.segs.map(seg => seg.text).join(''))
     expect(text.some(line => line.startsWith('M O D E L'))).toBe(true)
     expect(text.some(line => line.startsWith('E F F O R T'))).toBe(true)
+    expect(text.some(line => line.startsWith('R O W S'))).toBe(true)
     expect(text.some(line => /S E T T I N G S/.test(line))).toBe(true)
     const chips = rows.flatMap(row => row.segs)
     expect(chips.find(seg => seg.inverse && seg.text.trim() === 'Opus')).toBeDefined()
     expect(chips.find(seg => seg.inverse && seg.text.trim() === 'High')).toBeDefined()
+    expect(chips.find(seg => seg.inverse && seg.text.trim() === 'Quiet')).toBeDefined()
     expect(chips.find(seg => seg.button?.key === 'model-sonnet')).toBeDefined()
     expect(chips.find(seg => seg.button?.key === 'model-opus')).toBeUndefined()
   })
@@ -72,19 +74,20 @@ describe('settings popover', () => {
     expect(world.commandRuns).toEqual(['/model fable', '/effort xhigh'])
   })
 
-  test('the settings rows toggle clean view, the spike and tool-row suppression', async ($, on) => {
+  test('the rows level is three chips, quiet by default; the spike is a switch', async ($, on) => {
     worldOf(on)
     await openTools($ as never)
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
+    const quiet = await ui.findAll({ type: 'Text', text: /Quiet/ })
+    expect(quiet.some(element => element.props.inverse === true)).toBe(true)
+    expect(await ui.find({ key: 'rows-quiet' })).toBeUndefined()
+    await ui.press({ key: 'rows-clean' })
+    expect(await ui.find({ key: 'rows-quiet' })).toBeDefined()
+    expect(await ui.find({ key: 'rows-clean' })).toBeUndefined()
+
     const onOff = async (key: string) => (await ui.find({ key }))?.props.label
     expect(await onOff('set-spike')).toBe('On')
     await ui.press({ key: 'set-spike' })
     expect(await onOff('set-spike')).toBe('Off')
-    await ui.press({ key: 'set-suppress' })
-    expect(await onOff('set-suppress')).toBe('Off')
-    await ui.press({ key: 'set-clean' })
-    expect(await onOff('set-clean')).toBe('Off')
-    // The dots follow: all three off now
-    expect(linesOf(await ui.drawn()).filter(text => text === '○')).toHaveLength(3)
   })
 })

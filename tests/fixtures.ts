@@ -17,6 +17,8 @@ export type World = {
   configSets: [string, unknown][]
   /** Slash commands the mod ran through `$.command.run`, as typed. */
   commandRuns: string[]
+  /** What `$.agent.list()` answers; a test edits it as agents finish. */
+  agents: { id: string; status: string; type?: string; description?: string; parentId?: string; spawnedBy?: string }[]
 }
 
 export type WorldOptions = {
@@ -55,6 +57,7 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
     saved,
     configSets: [],
     commandRuns: [],
+    agents: [],
   }
   const modelMs = options.modelMs ?? 0
   const plan = options.plan ?? ['Read the code', 'Fix the bug', 'Run the tests']
@@ -113,6 +116,7 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('session.start', () => ({ cwd: '/work' }))
+  on('agent.list', () => ({ value: world.agents.map(agent => ({ type: 'Explore', description: 'x', ...agent })) as never }))
   on('session.model', () => ({ value: options.model ?? 'claude-opus-5-5' }))
   on('config.list', () => ({ value: (options.configRows ?? []) as never }))
   on('config.set', ($, e) => {
@@ -222,17 +226,24 @@ export function linesOf(tree: unknown): string[] {
   return lines
 }
 
-type Switch = 'set-clean' | 'set-spike' | 'set-suppress'
+type PopoverKey = 'set-spike' | 'rows-off' | 'rows-clean' | 'rows-quiet'
 
 /**
- * Flips one of the mod's switches as a person does: opens the settings with
- * `/receipts tools`, presses the row, closes it again. The test kit's `$`
+ * Presses one of the popover's controls as a person does: opens the settings
+ * with `/receipts tools`, presses it, closes them again. The test kit's `$`
  * has no `state` noun, so state is driven and read through the drawing.
  */
-export async function flip($: { command: { run: (e: never) => Promise<unknown> }; ui: { mount: (e: never) => Promise<{ press: (t: { key: string }) => Promise<unknown>; unmount: () => Promise<void> }> } }, key: Switch): Promise<void> {
+export async function flip($: { command: { run: (e: never) => Promise<unknown> }; ui: { mount: (e: never) => Promise<{ press: (t: { key: string }) => Promise<unknown>; unmount: () => Promise<void> }> } }, key: PopoverKey): Promise<void> {
   await $.command.run({ command: 'receipts', args: 'tools' } as never)
   const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' } as never)
   await ui.press({ key })
   await ui.press({ key: 'tools-close' })
   await ui.unmount()
+}
+
+/**
+ * A render envelope for one of the transcript or chrome sites quiet touches.
+ */
+export function siteOf(component: string, props: unknown, requestId = component) {
+  return { plugin: 'receipts', component, requestId, surface: 'terminal', props } as never
 }
