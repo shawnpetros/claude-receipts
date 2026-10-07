@@ -114,7 +114,7 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
   on('turn.complete', () => ({ text: '' }))
   on('session.start', () => ({ cwd: '/work' }))
   on('session.model', () => ({ value: options.model ?? 'claude-opus-5-5' }))
-  on('config.list', () => ({ value: options.configRows ?? [] }))
+  on('config.list', () => ({ value: (options.configRows ?? []) as never }))
   on('config.set', ($, e) => {
     world.configSets.push([e.key, e.value])
     return { value: e.value }
@@ -220,4 +220,19 @@ export function linesOf(tree: unknown): string[] {
   }
   walk(tree)
   return lines
+}
+
+type Switch = 'set-clean' | 'set-spike' | 'set-suppress'
+
+/**
+ * Flips one of the mod's switches as a person does: opens the settings with
+ * `/receipts tools`, presses the row, closes it again. The test kit's `$`
+ * has no `state` noun, so state is driven and read through the drawing.
+ */
+export async function flip($: { command: { run: (e: never) => Promise<unknown> }; ui: { mount: (e: never) => Promise<{ press: (t: { key: string }) => Promise<unknown>; unmount: () => Promise<void> }> } }, key: Switch): Promise<void> {
+  await $.command.run({ command: 'receipts', args: 'tools' } as never)
+  const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' } as never)
+  await ui.press({ key })
+  await ui.press({ key: 'tools-close' })
+  await ui.unmount()
 }

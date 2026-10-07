@@ -187,9 +187,14 @@ describe('band in the session', () => {
     await ui.press({ key: 'collapse' })
     expect(await ui.find({ key: 'summary' })).toBeUndefined()
     expect(await ui.find({ key: 'title' })).toBeDefined()
-    expect((await $.state.get({ plugin: 'receipts', key: 'collapsed' })).value).toBe(true)
-    await ui.press({ key: 'collapse' })
-    expect(await ui.find({ key: 'summary' })).toBeDefined()
+
+    // Kept in state: a fresh drawing of the band is still collapsed
+    await ui.unmount()
+    const remounted = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
+    expect(await remounted.find({ key: 'summary' })).toBeUndefined()
+    expect(await remounted.find({ key: 'collapse', text: '[+]' })).toBeDefined()
+    await remounted.press({ key: 'collapse' })
+    expect(await remounted.find({ key: 'summary' })).toBeDefined()
   })
 
   test('turn.complete recolours it green and it stays until the next prompt', async ($, on) => {

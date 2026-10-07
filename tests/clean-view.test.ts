@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { linesOf, PANE, toolRowOf, worldOf } from './fixtures'
+import { flip, linesOf, PANE, toolRowOf, worldOf } from './fixtures'
 
 const ENGINE = 'drawn by Claude Code'
 
@@ -8,7 +8,7 @@ describe('clean view', () => {
   test('a plain tool row draws one dim line; milestone rows draw in full; the toggle restores', async ($, on) => {
     const world = worldOf(on)
     // This test covers clean view alone; suppression has its own below
-    await $.state.set({ plugin: 'receipts', key: 'suppress' }, false)
+    await flip($ as never, 'set-suppress')
     await $.turn.start({ text: 'fix x', turnId: 'c1' })
     await $.tool.call({ tool: 'Read', file_path: '/work/src/a.ts' })
     await $.tool.call({ tool: 'Edit', file_path: '/work/src/x.ts', old_string: 'a', new_string: 'b' })
@@ -150,7 +150,7 @@ describe('clean view', () => {
     expect(linesOf(await after.drawn())).toEqual(['● Read src/a.ts'])
 
     // And the toggle restores every row in full
-    await $.state.set({ plugin: 'receipts', key: 'cleanView' }, false)
+    await flip($ as never, 'set-clean')
     await after.unmount()
     const full = await $.ui.mount({ ...toolRowOf(readId!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })
     expect(linesOf(await full.drawn())).toEqual([ENGINE])
@@ -158,7 +158,7 @@ describe('clean view', () => {
 
   test('suppression off: rows are clean view\'s dim lines even mid-turn', async ($, on) => {
     const world = worldOf(on)
-    await $.state.set({ plugin: 'receipts', key: 'suppress' }, false)
+    await flip($ as never, 'set-suppress')
     await $.turn.start({ text: 'fix x', turnId: 's2' })
     await $.tool.call({ tool: 'Read', file_path: '/work/src/a.ts' })
     const row = await $.ui.mount({ ...toolRowOf(world.toolIds[0]!, 'Read', { file_path: '/work/src/a.ts' }), surface: 'terminal' })

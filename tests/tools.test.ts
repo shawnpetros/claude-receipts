@@ -76,14 +76,15 @@ describe('settings popover', () => {
     worldOf(on)
     await openTools($ as never)
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
-    const state = async (key: 'cleanView' | 'spike' | 'suppress') => (await $.state.get({ plugin: 'receipts', key })).value
-    expect(await state('spike')).toBe(true)
+    const onOff = async (key: string) => (await ui.find({ key }))?.props.label
+    expect(await onOff('set-spike')).toBe('On')
     await ui.press({ key: 'set-spike' })
-    expect(await state('spike')).toBe(false)
+    expect(await onOff('set-spike')).toBe('Off')
     await ui.press({ key: 'set-suppress' })
-    expect(await state('suppress')).toBe(false)
+    expect(await onOff('set-suppress')).toBe('Off')
     await ui.press({ key: 'set-clean' })
-    expect(await state('cleanView')).toBe(false)
-    expect(linesOf(await ui.drawn()).join(' ')).toMatch(/Off/)
+    expect(await onOff('set-clean')).toBe('Off')
+    // The dots follow: all three off now
+    expect(linesOf(await ui.drawn()).filter(text => text === '○')).toHaveLength(3)
   })
 })
