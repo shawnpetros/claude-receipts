@@ -84,7 +84,7 @@ samples and with fraction complete (remaining uncertainty only). Confidence = f(
 fraction complete, variance), 0..1.
 
 **Spike.** When the shape bucket has <3 samples and the plan has ≥3 steps, once per task shape per
-session (never for research, writing or chat; 0.2.1, scar: a subagent per prompt), spawn a
+session (never for research, writing or chat; 0.2.2, scar: a subagent per prompt), spawn a
 subagent (`$.agent.spawn`, cheapest model available, 60s cap) with the plan and repo summary, asking for
 minutes per step and a 1..5 confidence. Treat as one sample at weight 0.5. Pane shows "spike guess"
 while it is the only basis. Can be turned off in userConfig.

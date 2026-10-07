@@ -124,7 +124,7 @@ When Claude Code reports usage, the line ends with what the turn cost:
 | An API key user, with no windows | `$0.42 this turn` |
 | Neither is known | nothing, never a guess |
 
-If a receipt line is wrong, for example it called an answer done when it wasn't, run `/receipts wrong`. Each receipt can be marked once. `/receipts stats` shows the share marked wrong. That number is the precondition for ever letting the receipt block a turn. See the roadmap.
+If the current turn's receipt line is wrong, for example it called an answer done when it wasn't, run `/receipts wrong`. Each receipt can be marked once. `/receipts stats` shows `claims-done false positives: 1 of 12 receipts (8%)`. That number is the precondition for ever letting the receipt block a turn. See the roadmap.
 
 A small model decides whether the answer claims done. If its label isn't back within 1.5 seconds, plain completion words in the answer decide instead.
 
@@ -138,7 +138,7 @@ A small model decides whether the answer claims done. If its label isn't back wi
 | `/receipts clean` | Switches the rows level to Off, and back to what it was |
 | `/receipts basis` | Shows or hides the basis tooltip, as `b` does |
 | `/receipts stats` | Shows the calibration history and task counts by type, with median durations |
-| `/receipts wrong` | Marks the last receipt line wrong, for the false-positive count in stats |
+| `/receipts wrong` | Marks the current turn's receipt line as a false positive, for the count in stats |
 | `/receipts reset-history` | Forgets every learned task |
 
 In the pane, `c` switches the rows level to Off and back, and `b` shows where the estimate comes from.
@@ -182,6 +182,7 @@ The mod calls the model API for its labels and the derived plan, and spawns a su
 
 - **VS Code** draws no pane and no band, so only the receipt line and the transcript rows show. This is tracked upstream as anthropics/claude-code #99423 and #99691.
 - **Claude Code Desktop** drops commands a mod registers, so `/receipts` and its subcommands aren't there. The band's keys still work.
+- **Two copies at once.** Don't load the inline copy (`--plugin-dir`) and the marketplace install in the same session. Both draw the same band and keep separate state, so the band you see may belong to the copy that missed the turn's end.
 - **Builds before 2.1.287** don't run mods. `hooks/hooks.json` carries an empty `hooks` key beside `modules`, so an older build loads nothing instead of failing.
 
 ## Roadmap
@@ -189,7 +190,7 @@ The mod calls the model API for its labels and the derived plan, and spawns a su
 Each release answers one question it can measure.
 
 - **0.3: can someone use it without a manual?** Everything from the 0.2 brief that hasn't landed yet. The test is a new user reading only the band and `/receipts` help.
-- **0.4: does the receipt change behaviour?** The cost line from `$.session.usage()` already shipped in 0.2.1. The rest is an optional gate that turns UNVERIFIED from a mirror into a block, off by default. It ships only after the claims-done classifier's false-positive rate has been measured over enough live turns with `/receipts wrong` and `/receipts stats`. A gate that blocks a finished turn gets the mod uninstalled.
+- **0.4: does the receipt change behaviour?** The cost line from `$.session.usage()` already shipped in 0.2.2. The rest is an optional gate that turns UNVERIFIED from a mirror into a block, off by default. It ships only after the claims-done classifier's false-positive rate has been measured over enough live turns with `/receipts wrong` and `/receipts stats`. A gate that blocks a finished turn gets the mod uninstalled.
 
 Not planned: token meters, burn bars, or a rename.
 

@@ -214,6 +214,8 @@ export class ReceiptsSession {
     }
     this.task = task
     this.last = null
+    // /receipts wrong is about the current turn's receipt, never an older one
+    this.lastReceipt = null
     // The fallback for an agent whose end never reached us: the next prompt
     this.waiting.clear()
     if (text.trim()) {
@@ -431,20 +433,20 @@ export class ReceiptsSession {
     return null
   }
 
-  /** The person says the last receipt was wrong: one mark per receipt. */
+  /** The person says this turn's receipt was wrong: one mark per receipt. */
   async markWrong(host: Host): Promise<string> {
     if (!this.lastReceipt) return 'no receipt this session to mark'
     if (this.lastReceipt.isMarked) return 'already marked wrong'
     this.lastReceipt.isMarked = true
     this.audit = { ...this.audit, wrong: this.audit.wrong + 1 }
     await host.storeSet(AUDIT_KEY, this.audit).catch(() => undefined)
-    return `marked wrong: ${this.auditLine()}`
+    return `marked wrong · ${this.auditLine()}`
   }
 
   private auditLine(): string {
     const { shown, wrong } = this.audit
     const percent = shown === 0 ? 0 : Math.round((wrong / shown) * 100)
-    return `${wrong} of ${shown} ${shown === 1 ? 'receipt' : 'receipts'} marked wrong (${percent}%)`
+    return `claims-done false positives: ${wrong} of ${shown} ${shown === 1 ? 'receipt' : 'receipts'} (${percent}%)`
   }
 
   /** A tool call began: its start, for the permission wait. */
@@ -617,7 +619,7 @@ export class ReceiptsSession {
 
   statsText(): string {
     const tasks = this.history.tasks
-    const audit = `receipts: ${this.auditLine()}; mark a wrong one with /receipts wrong`
+    const audit = `${this.auditLine()}; mark a wrong one with /receipts wrong`
     if (tasks.length === 0) return ['no finished tasks yet; the estimate runs on its prior until a few land', audit].join('\n')
     const byType = new Map<string, number[]>()
     for (const task of tasks) {
