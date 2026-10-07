@@ -21,13 +21,22 @@ Claude Code, overloaded_prompt 77%, outcome partial 26%.
 
 ## 1. Surfaces (mods API, docs at code.claude.com/docs/en/plugins/mods)
 
-- `Pane` (auto-opens at ≥144 cols; user can open narrower) or, when no pane, an `AbovePrompt` band of
-  at most 3 rows. Same content, less of it.
+- The `AbovePrompt` band is the primary surface (revised 2026-10-07; the auto-opened dock pane took a
+  third of a fullscreen terminal for four lines). A round-bordered block: title row (prompt, elapsed,
+  `[-]`), a summary row (step i of n, a step-weighted bar, percent, the estimate range with its basis),
+  one row per step (12-cell bar and a state word, six at most, then `+n more`). Below 110 columns the
+  step bars drop. On turn end it becomes the completion card (green, or warning when UNVERIFIED or a
+  check failed) until the next prompt. `Pane` opens only on `/receipts`.
 - `ui.render` on `ToolUse`, `ToolResult`, `ToolGroup` rows: when clean view is on, draw one dim line
   per call (`● Edit src/x.ts`, `⎿ 12 lines`) instead of the full block. Milestone events draw normally.
+  Suppression (on by default) goes further while a turn runs: plain rows draw nothing, milestone
+  events one dim line each with their outcome.
+- Settings popover in the band (`t`, `/receipts tools`): model and effort chips, switches for clean
+  view, the spike and suppression. Drawn in the band because a `Pane` cannot ask to be inline.
 - `turn.complete` `{ text }`: one receipt line under the answer.
 - Buttons: `clean view on/off`, `estimate basis`, `park` (no-op placeholder for a later mod; hidden).
-- Commands: `/receipts` (toggle pane), `/receipts stats` (calibration history), `/receipts reset-history`.
+- Commands: `/receipts` (toggle pane), `/receipts tools`, `/receipts stats` (calibration history),
+  `/receipts reset-history`.
 
 ## 2. Milestones
 
@@ -69,8 +78,9 @@ while it is the only basis. Can be turned off in userConfig.
 - Countdown digits appear only when confidence ≥ 0.5; below that show the range and a bar.
 - When elapsed exceeds the range: `over by 2m 10s`, the bar turns dim, the estimate re-widens using
   elapsed as a lower bound. Never freezes, never resets to indeterminate.
-- Calibration line, always visible in the pane: `calibration: 61% of 18 tasks ended inside the range`.
-  Below 50% after ≥10 tasks: the pane says so in plain words.
+- Calibration line: in the pane, `/receipts stats`, and the band's `b` tooltip:
+  `calibration: 61% of 18 tasks ended inside the range`. Below 50% after ≥10 tasks: the band says so in
+  plain words, permanently, and it cannot be folded away.
 - Progress bar is by steps weighted by expected duration, not by count.
 
 **Learning.** On turn end with a completed task, write actual durations per step and total under the
@@ -90,7 +100,8 @@ turn; this is a mirror, not a gate, in v1.
 1. **Never a point estimate, never a frozen countdown.** Scar: every "ETA" in every tool ever.
 2. **Indeterminate is time-boxed.** Scar: Shawn's own words, "don't cheat and just stay indeterminate."
 3. **Basis always named, calibration always shown.** The mod reports its own hit rate; a bad score is
-   displayed, not hidden.
+   displayed, not hidden. (Revised 2026-10-07: a passing score moved behind `b` to keep the band small;
+   a failing one stays on the band.)
 4. **Clean view hides rendering only.** The transcript rows are untouched; toggling off shows everything.
    Scar: the original /buddy main-model leak; a mod rewriting content is a different and riskier thing.
 5. **Milestone events are never hidden.** Edits, verify runs with exit code, commits, PRs.
@@ -115,7 +126,11 @@ turn; this is a mirror, not a gate, in v1.
 - Receipt: edit then `bun test` exit 0 then "done" → receipt line; edit then "done" with no verify →
   UNVERIFIED line; no edits → no line; verify before the last edit → UNVERIFIED.
 - Hook budget: every hook under 2s with model calls stubbed to 1.5s.
-- Band fallback: at 100 cols with no pane, ≤3 rows, no line wider than columns.
+- Band: at 160 and 100 cols, title + summary + one row per step, every row exactly the inner width;
+  step bars only at ≥110; collapse leaves the title row; the completion card recolours with its badge
+  variants; no pane opens unasked.
+- Suppression: plain tool rows draw nothing mid-turn, milestones one dim line, full after the toggle.
+- Popover: the current model highlighted; a pick goes through the /config row, else /model.
 
 ## 7. Out of scope v1
 
