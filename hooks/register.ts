@@ -61,8 +61,9 @@ const spike = atom({ plugin: 'receipts', key: 'spike' }, true)
 const tick = atom({ plugin: 'receipts', key: 'tick' }, 0)
 
 const USAGE =
-  'usage: /receipts (toggle the pane), /receipts tools, /receipts rows [off|clean|quiet], /receipts clean, /receipts basis, /receipts stats, /receipts reset-history'
-const PANE_ROWS = 14
+  'usage: /receipts (toggle the pane), /receipts tools, /receipts rows [off|clean|quiet], /receipts clean, /receipts basis, /receipts stats, /receipts wrong, /receipts reset-history'
+const PANE_MIN_ROWS = 6
+const PANE_MAX_ROWS = 24
 
 /**
  * The mods API as the session logic sees it. Top level and handed `$`, so
@@ -86,6 +87,7 @@ function hostOf($: EngineInterface): Host {
     repo: () => $.session.repo(),
     list: path => $.fs.list(path),
     agents: () => $.agent.list(),
+    usage: () => $.session.usage(),
   }
 }
 
@@ -240,9 +242,17 @@ export function register(on: On, options: PluginOptions): void {
 
   on('tool.call', async ($, e, next) => {
     session.beforeTool(e, e)
+    session.toolStarted(e.tool_use_id, await $.clock.now())
     const outcome = await next(e)
     await session.afterTool(hostOf($), e, e, outcome).catch(() => undefined)
     return outcome
+  }).catch(($, e, next) => next(e))
+
+  // The tool's own run time, which excludes the permission prompt: the rest
+  // of the call's span was waiting on the person, and is not learned as work
+  on('classic.PostToolUse', async ($, e, next) => {
+    session.toolRan(e.tool_use_id, e.duration_ms)
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   // Under the answer: the receipt, or UNVERIFIED. A mirror, never a gate
@@ -273,6 +283,7 @@ export function register(on: On, options: PluginOptions): void {
       $.ui.invalidate('ui.render')
       return { text: session.isBasisShown ? 'basis shown on the band' : 'basis hidden' }
     }
+    if (arg === 'wrong') return { text: await session.markWrong(hostOf($)) }
     if (arg === 'clean') return { text: `rows: ${await toggleClean($)}` }
     if (arg === 'rows' || arg.startsWith('rows ')) {
       const wanted = arg.slice(4).trim()
@@ -296,8 +307,10 @@ export function register(on: On, options: PluginOptions): void {
       session.paneClosed()
       return {}
     }
-    // rows: inline (the main screen) it opens that tall, not cut to a third
-    const placed = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows: PANE_ROWS })
+    // rows: inline (the main screen) it opens as tall as its content, not cut
+    // to a third; a dock ignores it and the render fits its rows instead
+    const wanted = paneLines(session.viewModel(await $.clock.now())).length + 1
+    const placed = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows: Math.max(PANE_MIN_ROWS, Math.min(PANE_MAX_ROWS, wanted)) })
     session.paneOpened(placed.isPlaced)
     return {}
   })
@@ -314,8 +327,13 @@ export function register(on: On, options: PluginOptions): void {
     await read($, tick)
     const now = await $.clock.now()
     session.paneDrawn()
+    session.ensureTicking(hostOf($), now)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const lines = paneLines(session.viewModel(now))
+    // Never more rows than the room has: the header, then the lines that fit
+    const all = paneLines(session.viewModel(now))
+    const room = Math.max(1, e.props.scroll.bodyRows - 1)
+    const lines =
+      all.length <= room ? all : [...all.slice(0, room - 1), { key: 'pane-more', text: `+${all.length - room + 1} more · /receipts stats`, dim: true }]
     return Box({
       flexDirection: 'column',
       children: [
@@ -358,6 +376,7 @@ export function register(on: On, options: PluginOptions): void {
     await read($, tick)
     const isCollapsed = await read($, collapsed)
     const now = await $.clock.now()
+    session.ensureTicking(hostOf($), now)
     const el = $.ui.resolve(e)
     const presses: Presses = {
       collapse: () => update($, collapsed, value => !value),

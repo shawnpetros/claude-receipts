@@ -6,7 +6,7 @@
  * shape has too few samples. No `$` here: plain data in, plain data out.
  */
 
-export const TASK_TYPES = ['build', 'debug', 'research', 'writing', 'config', 'refactor'] as const
+export const TASK_TYPES = ['build', 'debug', 'research', 'writing', 'config', 'refactor', 'chat'] as const
 
 export type TaskType = (typeof TASK_TYPES)[number] | 'unknown'
 

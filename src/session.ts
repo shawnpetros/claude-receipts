@@ -36,6 +36,7 @@ import {
   type ToolOutcome,
 } from './ledger'
 import {
+  completeAtEnd,
   completeCurrent,
   derivedPlan,
   editedPathOf,
@@ -51,6 +52,7 @@ import {
   onTodoWrite,
   parseDerivedSteps,
   stepDurations,
+  type Pause,
   type Plan,
   type TaskUpdateArgs,
   type Todo,
@@ -75,6 +77,12 @@ export const CLAIMS_DEADLINE_MS = 1_500
 export const TICK_MS = 1_000
 export const CLAIMS_LABELS = ['claims-done', 'not-claiming-done'] as const
 export const STEP_LABELS = ['step-done', 'step-not-done'] as const
+/** Task types whose steps are cheap: a spike would cost more than it tells. */
+export const NO_SPIKE_TYPES: readonly string[] = ['research', 'writing', 'chat']
+export const AUDIT_KEY = 'audit'
+const STEPS_DONE_SYSTEM =
+  'You read the final message of a coding assistant and a list of planned steps not yet marked done. ' +
+  'Answer with the numbers of the steps the message shows were completed, comma separated, or "none". No other text.'
 const PLAN_MODEL = 'haiku'
 const PLAN_TIMEOUT_MS = 20_000
 const PLAN_SYSTEM =
@@ -110,6 +118,17 @@ type TaskState = {
   /** The last range shown while 2 or more steps were left. */
   beforeFinal?: Snapshot
   firstRange?: Snapshot
+  /** Permission waits inside the task, subtracted from what is learned. */
+  pauses: Pause[]
+  /** The session's cost when the task started, for the turn's share. */
+  usdAtStart?: number
+}
+
+type Audit = {
+  /** Receipt lines shown under an answer that claimed done. */
+  shown: number
+  /** Of those, the ones the person marked wrong with /receipts wrong. */
+  wrong: number
 }
 
 type StepEvent = {
@@ -148,6 +167,14 @@ export class ReceiptsSession {
   private last: { plan: Plan; prompt: string; totalMs: number; receipt: string | null; isAborted: boolean } | null = null
   /** Agents the main loop started that were still running when its turn ended. */
   private waiting = new Set<string>()
+  /** Shapes already spiked this session: one guess per shape is enough. */
+  private readonly spikedShapes = new Set<string>()
+  private readonly toolStarts = new Map<string, number>()
+  private readonly toolEnds = new Map<string, number>()
+  private readonly toolRuns = new Map<string, number>()
+  private lastTickAt = 0
+  private audit: Audit = { shown: 0, wrong: 0 }
+  private lastReceipt: { turnId: string; isMarked: boolean } | null = null
   private readonly milestoneIds = new Set<string>()
   private readonly spikeWaiters = new Map<string, TaskState>()
   private ticker: { cancel: () => void } | null = null
@@ -183,6 +210,7 @@ export class ReceiptsSession {
       isSpiked: false,
       checkedSteps: new Set(),
       seenEdits: new Set(),
+      pauses: [],
     }
     this.task = task
     this.last = null
@@ -196,10 +224,9 @@ export class ReceiptsSession {
         })
         .catch(() => undefined)
     }
-    this.ticker?.cancel()
-    this.ticker = host.every(TICK_MS, () => {
-      void this.tick(host)
-    })
+    this.startTicker(host, now)
+    const usage = await host.usage().catch(() => null)
+    if (usage?.cost) task.usdAtStart = usage.cost.usd
     // No pane opens unasked: the band above the prompt is the surface, and
     // `/receipts` opens the pane for the long view. Scar: the auto-opened
     // dock took a third of a fullscreen terminal to show four lines.
@@ -252,6 +279,10 @@ export class ReceiptsSession {
     const task = this.task
     if (!task) return
     const now = await host.now()
+    if (this.toolStarts.has(e.tool_use_id)) {
+      this.toolEnds.set(e.tool_use_id, now)
+      this.settlePause(e.tool_use_id)
+    }
     task.counts = countTool(task.counts, e.tool)
     const fields = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
     const result = outcome.result as Record<string, unknown> | undefined
@@ -307,27 +338,43 @@ export class ReceiptsSession {
     this.ticker = null
     const now = await host.now()
 
+    // Both labels run at once, under one deadline: the claims-done label, and
+    // for a derived plan which of its open steps the final answer completed
+    const hasEdits = task.ledger.edits.length > 0 && !e.isAborted
+    const [claims, finishedSteps] = await Promise.all([
+      hasEdits ? this.withDeadline(host, task.claims ?? this.claimsDone(host, e.answer), CLAIMS_DEADLINE_MS) : Promise.resolve(undefined),
+      e.isAborted ? Promise.resolve(undefined) : this.withDeadline(host, this.stepsDoneBy(host, task, e.answer), CLAIMS_DEADLINE_MS),
+    ])
     let line: string | null = null
-    if (task.ledger.edits.length > 0 && !e.isAborted) {
-      const claims = await this.withDeadline(host, task.claims ?? this.claimsDone(host, e.answer), CLAIMS_DEADLINE_MS)
-      line = receiptLine(task.ledger, claims ?? looksDone(e.answer), now, task.cwd)
-    }
+    if (hasEdits) line = receiptLine(task.ledger, claims ?? looksDone(e.answer), now, task.cwd)
 
-    const plan = finishPlan(task.plan.source === 'none' ? fallbackPlan(task.startedAt) : task.plan, now)
+    const answered = finishedSteps && finishedSteps.length > 0 ? completeAtEnd(task.plan, finishedSteps, now, task.startedAt) : task.plan
+    const plan = finishPlan(answered.source === 'none' ? fallbackPlan(task.startedAt) : answered, now)
     const totalMs = Math.max(0, now - task.startedAt)
     this.last = { plan, prompt: task.prompt, totalMs, receipt: line, isAborted: e.isAborted }
+    let shown = line
+    if (line) {
+      this.audit = { ...this.audit, shown: this.audit.shown + 1 }
+      this.lastReceipt = { turnId: task.turnId, isMarked: false }
+      await host.storeSet(AUDIT_KEY, this.audit).catch(() => undefined)
+      const cost = await this.costOf(host, task)
+      if (cost) shown = `${line} · ${cost}`
+    }
 
     // A task-tool plan finished only when every item did; a derived or
     // fallback plan finished when the turn answered.
     const isFinished = plan.source === 'tasks' ? isComplete(plan) : true
     if (isOwn && !e.isAborted && e.reason === 'answer' && isFinished) {
       const range = task.beforeFinal ?? task.firstRange
-      const steps = stepDurations(plan, task.startedAt)
+      // Learned as work: permission waits come out of the steps and the total.
+      // Calibration is scored on the wall clock, as the range was shown
+      const steps = stepDurations(plan, task.startedAt, task.pauses)
+      const paused = task.pauses.reduce((sum, pause) => sum + pause.ms, 0)
       this.history = addTask(this.history, {
         at: now,
         shape: { ...this.shapeOf(task), steps: stepBucketOf(Math.max(1, plan.items.length)) },
         steps,
-        totalMs,
+        totalMs: Math.max(0, totalMs - paused),
         ...(range ? { inside: totalMs >= range.low && totalMs <= range.high } : {}),
       })
       this.stats = statsOf(this.history)
@@ -335,7 +382,115 @@ export class ReceiptsSession {
     }
     await this.countWaiting(host)
     host.redraw()
-    return line
+    return shown
+  }
+
+  /**
+   * One pass over the final answer for a derived plan: which of the steps not
+   * yet done does it show were completed? Indexes into the plan; none for a
+   * plan of another source, or when nothing is open.
+   */
+  private async stepsDoneBy(host: Host, task: TaskState, answer: string): Promise<number[]> {
+    if (task.plan.source !== 'derived' || !answer.trim()) return []
+    const open = task.plan.items.map((item, i) => ({ item, i })).filter(({ item }) => item.state === 'pending')
+    if (open.length === 0) return []
+    try {
+      const reply = await host.complete({
+        model: PLAN_MODEL,
+        system: STEPS_DONE_SYSTEM,
+        prompt: `Steps not yet marked done:\n${open.map(({ item, i }) => `${i + 1}. ${item.label}`).join('\n')}\n\nThe final message:\n${answer.slice(0, 4_000)}`,
+        maxTokens: 40,
+        timeoutMs: CLAIMS_DEADLINE_MS,
+      })
+      if (!reply.isAnswered) return []
+      const wanted = new Set(open.map(({ i }) => i))
+      return [...reply.text.matchAll(/\d+/g)].map(match => Number(match[0]) - 1).filter(i => wanted.has(i))
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * What the turn cost, for the receipt line: a plan user's five-hour window
+   * and its reset, an API user's dollars this turn, or nothing when neither
+   * is known. Never a guess.
+   */
+  private async costOf(host: Host, task: TaskState): Promise<string | null> {
+    const usage = await host.usage().catch(() => null)
+    if (!usage) return null
+    const window = usage.rateLimits.find(limit => limit.kind === 'five_hour')
+    if (window) {
+      const resets = window.resetsAt ? new Date(window.resetsAt) : null
+      const at = resets && !Number.isNaN(resets.getTime()) ? `, resets ${String(resets.getHours()).padStart(2, '0')}:${String(resets.getMinutes()).padStart(2, '0')}` : ''
+      return `5h window ${window.percentUsed}% used${at}`
+    }
+    if (usage.rateLimits.length === 0 && usage.cost && task.usdAtStart !== undefined) {
+      const spent = usage.cost.usd - task.usdAtStart
+      if (spent > 0) return `$${spent.toFixed(2)} this turn`
+    }
+    return null
+  }
+
+  /** The person says the last receipt was wrong: one mark per receipt. */
+  async markWrong(host: Host): Promise<string> {
+    if (!this.lastReceipt) return 'no receipt this session to mark'
+    if (this.lastReceipt.isMarked) return 'already marked wrong'
+    this.lastReceipt.isMarked = true
+    this.audit = { ...this.audit, wrong: this.audit.wrong + 1 }
+    await host.storeSet(AUDIT_KEY, this.audit).catch(() => undefined)
+    return `marked wrong: ${this.auditLine()}`
+  }
+
+  private auditLine(): string {
+    const { shown, wrong } = this.audit
+    const percent = shown === 0 ? 0 : Math.round((wrong / shown) * 100)
+    return `${wrong} of ${shown} ${shown === 1 ? 'receipt' : 'receipts'} marked wrong (${percent}%)`
+  }
+
+  /** A tool call began: its start, for the permission wait. */
+  toolStarted(toolUseId: string, at: number): void {
+    this.toolStarts.set(toolUseId, at)
+  }
+
+  /** The tool's own run time, from classic PostToolUse (no prompt or hook time). */
+  toolRan(toolUseId: string, ms: number | undefined): void {
+    if (typeof ms !== 'number' || !Number.isFinite(ms)) return
+    this.toolRuns.set(toolUseId, ms)
+    this.settlePause(toolUseId)
+  }
+
+  /**
+   * Once a call's span and run time are both in: the rest is waiting. Only a
+   * wait of a second or more counts, so hook overhead is never a pause.
+   */
+  private settlePause(toolUseId: string): void {
+    const start = this.toolStarts.get(toolUseId)
+    const end = this.toolEnds.get(toolUseId)
+    const run = this.toolRuns.get(toolUseId)
+    if (start === undefined || end === undefined || run === undefined) return
+    this.toolStarts.delete(toolUseId)
+    this.toolEnds.delete(toolUseId)
+    this.toolRuns.delete(toolUseId)
+    const wait = end - start - run
+    if (wait >= 1_000 && this.task) this.task.pauses.push({ at: end, ms: wait })
+  }
+
+  /**
+   * After a hot reload the module's timers die while a drawing stays up. A
+   * render calls this: when a task is under way and nothing has ticked for
+   * two intervals, the ticker starts again.
+   */
+  ensureTicking(host: Host, now: number): void {
+    if (!this.task || now - this.lastTickAt <= 2 * TICK_MS) return
+    this.startTicker(host, now)
+  }
+
+  private startTicker(host: Host, now: number): void {
+    this.ticker?.cancel()
+    this.lastTickAt = now
+    this.ticker = host.every(TICK_MS, () => {
+      void this.tick(host)
+    })
   }
 
   /**
@@ -462,7 +617,8 @@ export class ReceiptsSession {
 
   statsText(): string {
     const tasks = this.history.tasks
-    if (tasks.length === 0) return 'no finished tasks yet; the estimate runs on its prior until a few land'
+    const audit = `receipts: ${this.auditLine()}; mark a wrong one with /receipts wrong`
+    if (tasks.length === 0) return ['no finished tasks yet; the estimate runs on its prior until a few land', audit].join('\n')
     const byType = new Map<string, number[]>()
     for (const task of tasks) {
       const list = byType.get(task.shape.taskType) ?? []
@@ -476,6 +632,7 @@ export class ReceiptsSession {
       `${tasks.length} finished ${tasks.length === 1 ? 'task' : 'tasks'} in history`,
       ...calibrationLines(calibrationOf(this.history)),
       `by type: ${rows.join(', ')}`,
+      audit,
     ].join('\n')
   }
 
@@ -495,6 +652,8 @@ export class ReceiptsSession {
     this.isLoaded = true
     const raw = await host.storeGet(HISTORY_KEY).catch(() => undefined)
     this.history = parseHistory(raw)
+    const audit = (await host.storeGet(AUDIT_KEY).catch(() => undefined)) as Partial<Audit> | undefined
+    if (typeof audit?.shown === 'number' && typeof audit.wrong === 'number') this.audit = { shown: audit.shown, wrong: audit.wrong }
     this.stats = statsOf(this.history)
   }
 
@@ -552,7 +711,9 @@ export class ReceiptsSession {
 
   private async tick(host: Host): Promise<void> {
     if (!this.task) return
-    this.observe(await host.now())
+    const now = await host.now()
+    this.lastTickAt = now
+    this.observe(now)
     host.redraw()
   }
 
@@ -612,6 +773,13 @@ export class ReceiptsSession {
     task.isSpiked = true
     await Promise.all([this.probing, task.typed])
     if (bucketSamples(this.stats, this.shapeOf(task)) >= 3) return
+    // Once per shape per session, and never for cheap task types. Scar: a
+    // cheap subagent per prompt in an unfamiliar repo (the 0.2.0 live run)
+    if (NO_SPIKE_TYPES.includes(task.taskType)) return
+    const shape = this.shapeOf(task)
+    const shapeKey = `${shape.taskType}|${shape.steps}|${shape.repo}`
+    if (this.spikedShapes.has(shapeKey)) return
+    this.spikedShapes.add(shapeKey)
     try {
       const spawned = await host.spawn({
         prompt: spikePromptOf(task.prompt, task.plan.items.map(item => item.label), this.repoEntries),

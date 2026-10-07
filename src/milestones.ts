@@ -156,16 +156,50 @@ export function hasCompleted(plan: Plan): boolean {
  * How long each finished step took, in plan order, measured from its own
  * start or, failing that, from the previous step's end or the task's start.
  */
-export function stepDurations(plan: Plan, startedAt: number): number[] {
+export function stepDurations(plan: Plan, startedAt: number, pauses: readonly Pause[] = []): number[] {
   const durations: number[] = []
   let previousEnd = startedAt
   for (const item of plan.items) {
     if (item.state !== 'done' || item.doneAt === undefined) continue
     const start = item.startedAt ?? previousEnd
-    durations.push(Math.max(0, item.doneAt - start))
-    previousEnd = item.doneAt
+    const doneAt = item.doneAt
+    const paused = pauses.filter(pause => pause.at > start && pause.at <= doneAt).reduce((sum, pause) => sum + pause.ms, 0)
+    durations.push(Math.max(0, doneAt - start - paused))
+    previousEnd = doneAt
   }
   return durations
+}
+
+/**
+ * Time inside a step that was not work: a permission prompt waiting on the
+ * person, measured as a tool call's span less its run time. `at` is when the
+ * call ended, which places it in its step.
+ */
+export type Pause = {
+  at: number
+  ms: number
+}
+
+/**
+ * The turn ended and a pass over the final answer said it completed the
+ * steps at `indexes` too. They and the step under way share the time since
+ * the last finished step in equal slices: the mod knows they finished, not
+ * when, and an even split teaches less wrong than zero-length steps.
+ */
+export function completeAtEnd(plan: Plan, indexes: readonly number[], now: number, startedAt: number): Plan {
+  const current = plan.items.findIndex(item => item.state === 'current')
+  const chosen = indexes.filter(i => plan.items[i] !== undefined && plan.items[i]!.state === 'pending')
+  if (chosen.length === 0) return plan
+  const span = [...new Set([...(current === -1 ? [] : [current]), ...chosen])].sort((a, b) => a - b)
+  const lastDone = plan.items.reduce((at, item) => (item.doneAt !== undefined && item.doneAt > at ? item.doneAt : at), startedAt)
+  const from = Math.min(current === -1 ? lastDone : (plan.items[current]!.startedAt ?? lastDone), now)
+  const slice = (now - from) / span.length
+  const items = plan.items.map((item, i): Milestone => {
+    const k = span.indexOf(i)
+    if (k === -1) return item
+    return { ...item, state: 'done', startedAt: from + k * slice, doneAt: from + (k + 1) * slice }
+  })
+  return { ...plan, items }
 }
 
 /**

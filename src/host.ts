@@ -33,4 +33,6 @@ export type Host = {
   list: (path: string) => Promise<FsEntry[]>
   /** The session's agents, as `$.agent.list()` answers. */
   agents: () => Promise<readonly { id: string; status: string; parentId?: string; spawnedBy?: string }[]>
+  /** The session's usage, as `$.session.usage()` answers: rate-limit windows and cost. */
+  usage: () => Promise<{ rateLimits: readonly { kind: string; percentUsed: number; resetsAt?: string }[]; cost?: { usd: number } }>
 }

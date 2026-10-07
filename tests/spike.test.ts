@@ -42,13 +42,13 @@ describe('spike', () => {
     expect(world.spawns).toHaveLength(1)
   })
 
-  test('research, writing and chat tasks never spike: their steps are cheap', async ($, on) => {
-    for (const taskType of ['research', 'writing', 'chat']) {
+  for (const taskType of ['research', 'writing', 'chat']) {
+    test(`${taskType} tasks never spike: their steps are cheap`, async ($, on) => {
       const world = worldOf(on, { taskType })
       await runTask($ as never, world, `s-${taskType}`, 3)
-      expect(world.spawns, taskType).toHaveLength(0)
-    }
-  })
+      expect(world.spawns).toHaveLength(0)
+    })
+  }
 
   test('a 2-step plan does not spike', async ($, on) => {
     const world = worldOf(on, { plan: ['Look', 'Answer'] })

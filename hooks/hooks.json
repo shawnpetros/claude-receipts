@@ -1,4 +1,7 @@
 {
-  "description": "receipts: milestones and a learning estimate in a band above the prompt, tool rows suppressed while a turn runs, and a receipt under each answer that claims done",
-  "modules": ["./register.ts"]
+  "description": "receipts: an UNVERIFIED line when Claude claims done without a check, a progress band above the prompt, and quiet tool rows. Mods need Claude Code 2.1.287 or later; older builds ignore the modules key and read the empty hooks key, so they load nothing rather than fail.",
+  "hooks": {},
+  "modules": [
+    "./register.ts"
+  ]
 }
