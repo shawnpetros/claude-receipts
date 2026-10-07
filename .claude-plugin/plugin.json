@@ -1,6 +1,6 @@
 {
   "name": "receipts",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "UNVERIFIED when Claude claims done without a check: a receipt line under every answer that claims done, naming the test or build that ran after the last edit, or saying nothing did. Plus a progress band with an estimate that names its basis.",
   "author": {
     "name": "Shawn Petros"
