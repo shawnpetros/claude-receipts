@@ -1,7 +1,7 @@
 {
   "name": "receipts",
   "version": "0.2.1",
-  "description": "Says UNVERIFIED under any answer that claims done with nothing run after the last edit. A band above the prompt shows the steps and an estimate that names its basis; tool rows stay quiet.",
+  "description": "UNVERIFIED when Claude claims done without a check: a receipt line under every answer that claims done, naming the test or build that ran after the last edit, or saying nothing did. Plus a progress band with an estimate that names its basis.",
   "author": {
     "name": "Shawn Petros"
   },

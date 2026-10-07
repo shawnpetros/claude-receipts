@@ -44,11 +44,14 @@ Claude Code, overloaded_prompt 77%, outcome partial 26%.
   prompts are never hooked.
 - Settings popover in the band (`t`, `/receipts tools`): model, effort and rows chips, a switch for
   the spike. Drawn in the band because a `Pane` cannot ask to be inline.
-- `turn.complete` `{ text }`: one receipt line under the answer.
+- `turn.complete` `{ text }`: one receipt line under the answer, ending with the turn's cost when
+  `$.session.usage()` knows it: the five-hour window and reset for a plan user, dollars this turn for
+  an API key, nothing otherwise.
 - Buttons: `clean view on/off` (rows level off and back), `estimate basis`, `park` (no-op placeholder
   for a later mod; hidden).
 - Commands: `/receipts` (toggle pane), `/receipts tools`, `/receipts rows [off|clean|quiet]`,
-  `/receipts clean`, `/receipts basis`, `/receipts stats` (calibration history),
+  `/receipts clean`, `/receipts basis`, `/receipts stats` (calibration history and the share of
+  receipts marked wrong), `/receipts wrong` (marks the last receipt a false positive),
   `/receipts reset-history`.
 
 ## 2. Milestones
@@ -60,7 +63,9 @@ Source of truth, in order of preference:
 3. Fallback: a single milestone "the task".
 
 Step completion signals: TaskUpdate completed; or classify on each `turn.step` result text that a derived
-step is done (cheap, cached per step). Milestone events, always shown even in clean view: Edit/Write of
+step is done (cheap, cached per step). At turn end, one `$.model.complete` pass over the final answer
+names the open derived steps it completed (same 1.5s deadline as the claims-done label, in parallel);
+they share the time since the last finished step evenly. Milestone events, always shown even in clean view: Edit/Write of
 a file not seen before this turn, any Bash whose command matches a verify pattern with its exit code,
 `git commit`, `gh pr create`, subagent finished, test counts.
 
@@ -78,7 +83,8 @@ bucket with ≥3 samples, else parent buckets, else global prior. Interval = mea
 samples and with fraction complete (remaining uncertainty only). Confidence = f(samples in bucket,
 fraction complete, variance), 0..1.
 
-**Spike.** When the shape bucket has <3 samples and the plan has ≥3 steps, once per task, spawn a
+**Spike.** When the shape bucket has <3 samples and the plan has ≥3 steps, once per task shape per
+session (never for research, writing or chat; 0.2.1, scar: a subagent per prompt), spawn a
 subagent (`$.agent.spawn`, cheapest model available, 60s cap) with the plan and repo summary, asking for
 minutes per step and a 1..5 confidence. Treat as one sample at weight 0.5. Pane shows "spike guess"
 while it is the only basis. Can be turned off in userConfig.
@@ -98,7 +104,8 @@ while it is the only basis. Can be turned off in userConfig.
 - Progress bar is by steps weighted by expected duration, not by count.
 
 **Learning.** On turn end with a completed task, write actual durations per step and total under the
-shape key; update calibration (was the actual inside the last displayed range before the final step).
+shape key, less permission-prompt waits (a `tool.call` span minus classic PostToolUse `duration_ms`,
+1s or more); update calibration (was the actual inside the last displayed range before the final step).
 
 ## 4. Receipts (done-gate)
 
