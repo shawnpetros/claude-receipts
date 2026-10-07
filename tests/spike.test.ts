@@ -31,13 +31,23 @@ async function runTask($: never, world: ReturnType<typeof worldOf>, turnId: stri
 }
 
 describe('spike', () => {
-  test('an unfamiliar shape with a 3-step plan spawns exactly one subagent per task', async ($, on) => {
+  test('an unfamiliar shape with a 3-step plan spawns one subagent, once per shape per session', async ($, on) => {
     const world = worldOf(on)
     await runTask($ as never, world, 's1', 3)
     expect(world.spawns).toHaveLength(1)
     expect(world.spawns[0]).toMatch(/Read the code/)
+    // The same shape again in this session: its guess is already in hand.
+    // Scar: a cheap subagent per prompt in an unfamiliar repo (0.2.0 live run)
     await runTask($ as never, world, 's2', 2)
-    expect(world.spawns).toHaveLength(2)
+    expect(world.spawns).toHaveLength(1)
+  })
+
+  test('research, writing and chat tasks never spike: their steps are cheap', async ($, on) => {
+    for (const taskType of ['research', 'writing', 'chat']) {
+      const world = worldOf(on, { taskType })
+      await runTask($ as never, world, `s-${taskType}`, 3)
+      expect(world.spawns, taskType).toHaveLength(0)
+    }
   })
 
   test('a 2-step plan does not spike', async ($, on) => {

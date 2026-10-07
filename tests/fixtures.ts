@@ -19,6 +19,8 @@ export type World = {
   commandRuns: string[]
   /** What `$.agent.list()` answers; a test edits it as agents finish. */
   agents: { id: string; status: string; type?: string; description?: string; parentId?: string; spawnedBy?: string }[]
+  /** What `$.session.usage()` answers; a test edits it between calls. */
+  usage: { rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[]; cost?: { usd: number } }
 }
 
 export type WorldOptions = {
@@ -38,6 +40,10 @@ export type WorldOptions = {
   model?: string
   /** The rows `$.config.list()` answers. */
   configRows?: unknown[]
+  /** What the task-type classify answers; `debug` when left out. */
+  taskType?: string
+  /** What the end-of-turn "which steps did this answer complete" call answers. */
+  stepsDone?: string
 }
 
 /**
@@ -58,6 +64,7 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
     configSets: [],
     commandRuns: [],
     agents: [],
+    usage: { rateLimits: [] },
   }
   const modelMs = options.modelMs ?? 0
   const plan = options.plan ?? ['Read the code', 'Fix the bug', 'Run the tests']
@@ -89,15 +96,16 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
       return { value: options.claimsDone === false ? 'not-claiming-done' : 'claims-done' }
     }
     if (e.labels.includes('step-done')) return { value: 'step-not-done' }
-    return { value: 'debug' }
+    return { value: options.taskType ?? 'debug' }
   })
   on('model.complete', async ($, e) => {
     world.completes.push(e.prompt)
     if (modelMs > 0) await clock.sleep(modelMs)
+    const isStepsDone = e.prompt.includes('Steps not yet marked done')
     return {
       value: {
         isAnswered: true,
-        text: plan.map((line, i) => `${i + 1}. ${line}`).join('\n'),
+        text: isStepsDone ? (options.stepsDone ?? 'none') : plan.map((line, i) => `${i + 1}. ${line}`).join('\n'),
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
       },
     }
@@ -116,6 +124,7 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('session.start', () => ({ cwd: '/work' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: {} as never, ...JSON.parse(JSON.stringify(world.usage)) } }))
   on('agent.list', () => ({ value: world.agents.map(agent => ({ type: 'Explore', description: 'x', ...agent })) as never }))
   on('session.model', () => ({ value: options.model ?? 'claude-opus-5-5' }))
   on('config.list', () => ({ value: (options.configRows ?? []) as never }))

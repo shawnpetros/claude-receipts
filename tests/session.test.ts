@@ -98,6 +98,40 @@ describe('session', () => {
     expect(other.viewModel(late.now()).estimate).toMatchObject({ basis: 'prior only · derived plan' })
   })
 
+  test('a 30s permission prompt inside a step is not learned as work: it teaches a 2s step', async () => {
+    const fake = fakeHostOf()
+    const session = new ReceiptsSession({ spike: false })
+    await session.turnStart(fake.host, 'pw', 'run the suite')
+    const ok = { result: { task: { id: '1' } } }
+    session.beforeTool({ tool: 'TaskCreate', tool_use_id: 'c1' }, { subject: 'Run the suite' })
+    await session.afterTool(fake.host, { tool: 'TaskCreate', tool_use_id: 'c1' }, { subject: 'Run the suite' }, ok as never)
+    await session.afterTool(fake.host, { tool: 'TaskUpdate', tool_use_id: 'u1' }, { taskId: '1', status: 'in_progress' }, { result: {} } as never)
+    // The Bash call waits 30s on the person, then runs for 2s
+    session.toolStarted('b1', fake.now())
+    await fake.advance(32_000)
+    session.beforeTool({ tool: 'Bash', tool_use_id: 'b1' }, { command: 'make release' })
+    await session.afterTool(fake.host, { tool: 'Bash', tool_use_id: 'b1' }, { command: 'make release' }, { result: { stdout: '', stderr: '' } } as never)
+    session.toolRan('b1', 2_000)
+    await session.afterTool(fake.host, { tool: 'TaskUpdate', tool_use_id: 'u2' }, { taskId: '1', status: 'completed' }, { result: {} } as never)
+    await session.turnComplete(fake.host, { turnId: 'pw', answer: 'ok', isAborted: false, reason: 'answer' })
+    const history = fake.store.get(HISTORY_KEY) as History
+    expect(history.tasks[0]!.steps).toEqual([2_000])
+    expect(history.tasks[0]!.totalMs).toBe(2_000)
+  })
+
+  test('the tick restarts from a render when nothing has polled for a while', async () => {
+    const fake = fakeHostOf()
+    let starts = 0
+    const host = { ...fake.host, every: () => ((starts += 1), { cancel() {} }) }
+    const session = new ReceiptsSession({ spike: false })
+    await session.turnStart(host, 'tk', 'x')
+    expect(starts).toBe(1)
+    session.ensureTicking(host, fake.now() + 500)
+    expect(starts).toBe(1)
+    session.ensureTicking(host, fake.now() + 5_000)
+    expect(starts).toBe(2)
+  })
+
   test('a finished task is learned, with its calibration verdict, and the store holds it', async () => {
     const fake = fakeHostOf()
     const session = new ReceiptsSession({ spike: false })
