@@ -13,6 +13,7 @@ async function band($: { ui: { mount: (e: never) => Promise<{ drawn: () => Promi
   return text
 }
 
+// Each turn here calls a tool: a turn with none is an answer and skips the pass
 describe('derived steps at turn end', () => {
   test('one pass over the final answer marks the steps it completes', async ($, on) => {
     const world = worldOf(on, { plan: STEPS, stepsDone: '3, 4' })
@@ -20,6 +21,7 @@ describe('derived steps at turn end', () => {
     await $.turn.start({ text: 'is the newest version installed?', turnId: 'd1' })
     await step($ as never, 'd1', 0)
     await world.clock.settle()
+    await $.tool.call({ tool: 'Read', file_path: '/work/package.json' })
     await $.turn.complete({ turnId: 'd1', answer: RECAP, durationMs: 41_000, isAborted: false, reason: 'answer' })
 
     const asked = world.completes.filter(prompt => prompt.includes('Steps not yet marked done'))
@@ -38,6 +40,7 @@ describe('derived steps at turn end', () => {
     await $.turn.start({ text: 'x', turnId: 'd2' })
     await step($ as never, 'd2', 0)
     await world.clock.settle()
+    await $.tool.call({ tool: 'Read', file_path: '/work/package.json' })
     await $.turn.complete({ turnId: 'd2', answer: RECAP, durationMs: 1, isAborted: false, reason: 'answer' })
     expect(await band($ as never)).toMatch(/✓ All done/)
   })
@@ -47,7 +50,8 @@ describe('derived steps at turn end', () => {
     STEP_ANSWERS.set('d3:0', 'Looking.')
     await $.turn.start({ text: 'x', turnId: 'd3' })
     await step($ as never, 'd3', 0)
-    await world.clock.advance(6_000)
+    await world.clock.advance(11_000)
+    await $.tool.call({ tool: 'Read', file_path: '/work/package.json' })
     const done = $.turn.complete({ turnId: 'd3', answer: RECAP, durationMs: 1, isAborted: false, reason: 'answer' })
     await world.clock.advance(1_600)
     await done

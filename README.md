@@ -41,6 +41,7 @@ While a turn runs, the band has an orange border and these rows:
 
 When the turn ends, the band always leaves the working state. It becomes a completion card and stays until your next prompt:
 
+- **Answered.** A green `✓ Answered · 25s` badge for a turn that was an answer, not a job. A chat, research or writing prompt with no tool call gets one "answer" step instead of a derived plan, and any turn that ends without a tool call ends this way. If the answer turns into work and a tool runs, the mod derives a real plan once.
 - **All done.** A green border and a `✓ All done` badge, only when every step finished. A task-tool plan counts as finished when every task is completed.
 - **Turn ended short.** A grey `■ Turn ended · 2 of 5 steps reached` badge when steps were left. Those steps read `Not reached`, never `Done`.
 - **Verified.** A green border and a `✓ All done · bun test 152 pass` badge, every step ticked with a full bar, and `took 1m 47s` on the right.

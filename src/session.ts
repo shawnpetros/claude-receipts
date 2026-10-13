@@ -36,6 +36,7 @@ import {
   type ToolOutcome,
 } from './ledger'
 import {
+  answerPlan,
   completeAtEnd,
   completeCurrent,
   derivedPlan,
@@ -79,6 +80,9 @@ export const CLAIMS_LABELS = ['claims-done', 'not-claiming-done'] as const
 export const STEP_LABELS = ['step-done', 'step-not-done'] as const
 /** Task types whose steps are cheap: a spike would cost more than it tells. */
 export const NO_SPIKE_TYPES: readonly string[] = ['research', 'writing', 'chat']
+/** Task types whose turns are usually one answer: one step, unless a tool runs. */
+export const ANSWER_TYPES: readonly string[] = ['chat', 'research', 'writing']
+const PLAN_TOOLS: readonly string[] = ['TaskCreate', 'TaskUpdate', 'TodoWrite']
 export const AUDIT_KEY = 'audit'
 const STEPS_DONE_SYSTEM =
   'You read the final message of a coding assistant and a list of planned steps not yet marked done. ' +
@@ -120,6 +124,12 @@ type TaskState = {
   firstRange?: Snapshot
   /** Permission waits inside the task, subtracted from what is learned. */
   pauses: Pause[]
+  /** Tool calls this turn; none at all makes the turn an answer. */
+  toolCalls: number
+  /** The first assistant step's text, for a re-derivation. */
+  firstText: string
+  /** An answer plan becomes a derived one at most once, on the first tool call. */
+  isRederived: boolean
   /** The session's cost when the task started, for the turn's share. */
   usdAtStart?: number
 }
@@ -164,7 +174,7 @@ export class ReceiptsSession {
   private hasTests = false
   private repoEntries: string[] = []
   private task: TaskState | null = null
-  private last: { plan: Plan; prompt: string; totalMs: number; receipt: string | null; isAborted: boolean } | null = null
+  private last: { plan: Plan; prompt: string; totalMs: number; receipt: string | null; isAborted: boolean; judged: boolean } | null = null
   /** Agents the main loop started that were still running when its turn ended. */
   private waiting = new Set<string>()
   /** Shapes already spiked this session: one guess per shape is enough. */
@@ -211,6 +221,9 @@ export class ReceiptsSession {
       checkedSteps: new Set(),
       seenEdits: new Set(),
       pauses: [],
+      toolCalls: 0,
+      firstText: '',
+      isRederived: false,
     }
     this.task = task
     this.last = null
@@ -246,7 +259,8 @@ export class ReceiptsSession {
     const usesTaskTools = result.toolUses.some(use => use.name === 'TaskCreate' || use.name === 'TodoWrite')
     if (task.plan.source === 'none' && !task.isDeriving && !usesTaskTools) {
       task.isDeriving = true
-      void this.derive(host, task, result.answer)
+      task.firstText = result.answer
+      void this.derive(host, task, result.answer, result.toolUses.length === 0)
     }
     const answer = result.answer.trim()
     if (task.plan.source === 'derived' && answer && !task.checkedSteps.has(e.index)) {
@@ -286,6 +300,7 @@ export class ReceiptsSession {
       this.settlePause(e.tool_use_id)
     }
     task.counts = countTool(task.counts, e.tool)
+    task.toolCalls += 1
     const fields = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
     const result = outcome.result as Record<string, unknown> | undefined
     const isOk = outcome.deny === undefined && !outcome.isError
@@ -316,6 +331,12 @@ export class ReceiptsSession {
       }
     }
 
+    // An answer that turned into work: derive the real plan, once
+    if (task.plan.source === 'answer' && !task.isRederived && !PLAN_TOOLS.includes(e.tool)) {
+      task.isRederived = true
+      void this.derive(host, task, task.firstText, false)
+    }
+
     if (isPlanChanged) {
       this.observe(now)
       void this.maybeSpike(host, task)
@@ -343,17 +364,23 @@ export class ReceiptsSession {
     // Both labels run at once, under one deadline: the claims-done label, and
     // for a derived plan which of its open steps the final answer completed
     const hasEdits = task.ledger.edits.length > 0 && !e.isAborted
+    // No tool call and a reply: the turn was an answer, whatever plan the mod
+    // guessed, and it ends Answered without waiting on the judgement pass
+    const isAnswer = task.toolCalls === 0 && e.answer.trim() !== '' && !e.isAborted
     const [claims, finishedSteps] = await Promise.all([
       hasEdits ? this.withDeadline(host, task.claims ?? this.claimsDone(host, e.answer), CLAIMS_DEADLINE_MS) : Promise.resolve(undefined),
-      e.isAborted ? Promise.resolve(undefined) : this.withDeadline(host, this.stepsDoneBy(host, task, e.answer), CLAIMS_DEADLINE_MS),
+      e.isAborted || isAnswer ? Promise.resolve(undefined) : this.withDeadline(host, this.stepsDoneBy(host, task, e.answer), CLAIMS_DEADLINE_MS),
     ])
     let line: string | null = null
     if (hasEdits) line = receiptLine(task.ledger, claims ?? looksDone(e.answer), now, task.cwd)
 
-    const answered = finishedSteps && finishedSteps.length > 0 ? completeAtEnd(task.plan, finishedSteps, now, task.startedAt) : task.plan
-    const plan = finishPlan(answered.source === 'none' ? fallbackPlan(task.startedAt) : answered, now)
+    const judged = !isAnswer && finishedSteps !== undefined && finishedSteps.length > 0
+    const answered = judged ? completeAtEnd(task.plan, finishedSteps, now, task.startedAt) : task.plan
+    const plan = isAnswer
+      ? answerPlan(task.startedAt, now)
+      : finishPlan(answered.source === 'none' ? fallbackPlan(task.startedAt) : answered, now)
     const totalMs = Math.max(0, now - task.startedAt)
-    this.last = { plan, prompt: task.prompt, totalMs, receipt: line, isAborted: e.isAborted }
+    this.last = { plan, prompt: task.prompt, totalMs, receipt: line, isAborted: e.isAborted, judged }
     let shown = line
     if (line) {
       this.audit = { ...this.audit, shown: this.audit.shown + 1 }
@@ -538,7 +565,7 @@ export class ReceiptsSession {
       title: task ? task.prompt : (this.last?.prompt ?? ''),
       elapsedMs: task ? Math.max(0, now - task.startedAt) : (this.last?.totalMs ?? 0),
       finished: this.last
-        ? { totalMs: this.last.totalMs, receipt: this.last.receipt, isAborted: this.last.isAborted, waitingAgents: this.waiting.size }
+        ? { totalMs: this.last.totalMs, receipt: this.last.receipt, isAborted: this.last.isAborted, waitingAgents: this.waiting.size, judged: this.last.judged }
         : null,
     }
   }
@@ -719,7 +746,24 @@ export class ReceiptsSession {
     host.redraw()
   }
 
-  private async derive(host: Host, task: TaskState, firstText: string): Promise<void> {
+  /**
+   * The plan when the assistant made none. An answer-shaped prompt (chat,
+   * research, writing) with no tool by the first step gets one "answer"
+   * step and no model call; anything else, or an answer that later calls a
+   * tool, gets a derived plan of 2 to 8 steps.
+   */
+  private async derive(host: Host, task: TaskState, firstText: string, mayAnswer: boolean): Promise<void> {
+    const replacing = task.plan.source
+    if (mayAnswer) {
+      await task.typed
+      if (ANSWER_TYPES.includes(task.taskType) && task.toolCalls === 0) {
+        if (this.task !== task || task.plan.source !== 'none') return
+        task.plan = answerPlan(task.startedAt)
+        this.observe(await host.now())
+        host.redraw()
+        return
+      }
+    }
     let labels: string[] = []
     if (task.prompt.trim()) {
       try {
@@ -736,7 +780,7 @@ export class ReceiptsSession {
       }
     }
     // Task tools may have arrived meanwhile; they win
-    if (this.task !== task || task.plan.source !== 'none') return
+    if (this.task !== task || task.plan.source !== replacing) return
     task.plan = labels.length > 0 ? derivedPlan(labels, task.startedAt) : fallbackPlan(task.startedAt)
     this.observe(await host.now())
     void this.maybeSpike(host, task)

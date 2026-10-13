@@ -29,7 +29,7 @@ export type ViewModel = {
   /** Time since the task shown started. */
   elapsedMs: number
   /** Set once a task finished: how long it took, its receipt line, and whether it was cut short. */
-  finished: { totalMs: number; receipt: string | null; isAborted: boolean; waitingAgents: number } | null
+  finished: { totalMs: number; receipt: string | null; isAborted: boolean; waitingAgents: number; judged?: boolean } | null
 }
 
 export const BAR_WIDTH = 24
@@ -55,6 +55,8 @@ function headerOf(plan: Plan): Line {
       return { key: 'plan-header', text: 'plan · derived (the mod\'s guess, not the assistant\'s)', dim: true }
     case 'fallback':
       return { key: 'plan-header', text: 'plan · none given', dim: true }
+    case 'answer':
+      return { key: 'plan-header', text: 'plan · answer (one step: the reply)', dim: true }
     case 'none':
       return { key: 'plan-header', text: 'plan · waiting for the first step', dim: true }
     default:

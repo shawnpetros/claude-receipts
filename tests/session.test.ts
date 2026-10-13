@@ -141,6 +141,8 @@ describe('session', () => {
     await fake.settle()
     // A range was shown while three steps were left
     expect(session.viewModel(fake.now()).estimate?.kind).toBe('range')
+    // A tool ran, so the turn was a job, not an answer (which learns as one step)
+    await session.afterTool(fake.host, { tool: 'Read', tool_use_id: 'r1' }, { file_path: '/work/a.ts' }, { result: {} } as never)
     await fake.advance(4 * 60_000)
     const line = await session.turnComplete(fake.host, { turnId: 't4', answer: 'Here is the cause.', isAborted: false, reason: 'answer' })
     expect(line).toBeNull()

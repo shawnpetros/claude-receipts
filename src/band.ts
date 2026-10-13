@@ -199,7 +199,7 @@ function stepCounterOf(plan: Plan | null): string {
   const current = currentIndexOf(plan)
   const done = plan.items.filter(item => item.state === 'done').length
   const i = current === -1 ? Math.min(done + 1, n) : current + 1
-  return `Step ${i} of ${n}` + (plan.source === 'derived' ? ' · derived' : '')
+  return `Step ${i} of ${n}` + (plan.source === 'derived' ? ' · derived' : plan.source === 'answer' ? ' · answer' : '')
 }
 
 function titleRow(model: ViewModel, width: number, options: BandOptions, tone: BandTone, verdict: Verdict): Row {
@@ -244,6 +244,11 @@ function titleRow(model: ViewModel, width: number, options: BandOptions, tone: B
         const { done, total } = reachedOf(model.plan)
         badge = { text: ` ■ Turn ended · ${done} of ${total} ${total === 1 ? 'step' : 'steps'} reached `, color: OVER, inverse: true, bold: true }
         text = { text: title, grow: true }
+      } else if (model.plan?.source === 'answer') {
+        // An answer, not a job: the badge carries the time, the right side drops it
+        badge = { text: ` ✓ Answered · ${durationOf(model.finished?.totalMs ?? model.elapsedMs)} `, color: DONE, inverse: true, bold: true }
+        text = { text: title, color: DONE, grow: true }
+        return { key: 'title', segs: line(width, [badge, space(1), text], [...tail, ...buttons, collapse]) }
       } else {
         badge = { text: ' ✓ All done ', color: DONE, inverse: true, bold: true }
         text = { text: title, color: DONE, grow: true }
@@ -257,7 +262,10 @@ function summaryRow(model: ViewModel, width: number, tone: BandTone): Row {
   if (!model.isWorking) {
     const n = plan?.items.length ?? 0
     const done = plan?.items.filter(item => item.state === 'done').length ?? 0
-    const label = `${done} of ${n} ${n === 1 ? 'step' : 'steps'}` + (plan?.source === 'derived' ? ' · derived' : '')
+    const label =
+      `${done} of ${n} ${n === 1 ? 'step' : 'steps'}` +
+      (plan?.source === 'derived' ? ' · derived' : plan?.source === 'answer' ? ' · answer' : '') +
+      (model.finished?.judged ? ' · steps judged from the answer' : '')
     const progress = n === 0 ? 1 : done / n
     const percent = `${Math.round(progress * 100)}%`.padStart(4)
     const color = tone === 'done' ? DONE : tone === 'stopped' || tone === 'ended' ? OVER : WARN

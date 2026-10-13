@@ -20,7 +20,7 @@ export type Milestone = {
   doneAt?: number
 }
 
-export type PlanSource = 'none' | 'tasks' | 'derived' | 'fallback'
+export type PlanSource = 'none' | 'tasks' | 'derived' | 'fallback' | 'answer'
 
 export type Plan = {
   source: PlanSource
@@ -108,6 +108,22 @@ export function derivedPlan(labels: readonly string[], now: number): Plan {
       ...(i === 0 ? { startedAt: now } : {}),
     })),
   }
+}
+
+export const ANSWER_LABEL = 'answer the question'
+
+/**
+ * One step for a turn that is an answer, not a job: a chat, research or
+ * writing prompt with no tool by the first step, or any turn that ends with
+ * no tool call at all. Scar: a one-answer prompt drew a five-step derived
+ * plan and ended "1 of 5 steps reached" though the reply answered it.
+ */
+export function answerPlan(startedAt: number, doneAt?: number): Plan {
+  const item: Milestone =
+    doneAt === undefined
+      ? { id: 'answer', label: ANSWER_LABEL, state: 'current', startedAt }
+      : { id: 'answer', label: ANSWER_LABEL, state: 'done', startedAt, doneAt }
+  return { source: 'answer', items: [item] }
 }
 
 export function fallbackPlan(now: number): Plan {

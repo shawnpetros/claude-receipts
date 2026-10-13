@@ -68,6 +68,7 @@ describe('turn end in the session', () => {
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
     expect((await bandText(ui)).border).toBe('claude')
 
+    await $.tool.call({ tool: 'Bash', command: 'ls ~/.claude/plugins/cache' })
     await world.clock.advance(41_000)
     await $.turn.complete({ turnId: 'te1', answer: 'Yes, the newest version is installed.', durationMs: 41_000, isAborted: false, reason: 'answer' })
     const after = await bandText(ui)

@@ -65,7 +65,8 @@ describe('answer-shaped turns', () => {
     STEP_ANSWERS.set('a4:0', 'Here is how it works.')
     await $.turn.start({ text: 'how does the parser work?', turnId: 'a4' })
     await step($ as never, 'a4', 0)
-    await world.clock.advance(6_000)
+    // A 5s model: the task-type label, then the plan, before the band shows it
+    await world.clock.advance(11_000)
     expect((await band($ as never)).text).toMatch(/Step 1 of 3 · derived/)
     const done = $.turn.complete({ turnId: 'a4', answer: 'Here is how it works.', durationMs: 1, isAborted: false, reason: 'answer' })
     await world.clock.advance(1_600)
