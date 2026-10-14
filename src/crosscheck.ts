@@ -4,7 +4,7 @@
  *
  * Invariant 12: the cross-check is independent. A separate agent, read-only,
  * that may re-run the gate; its verdict is displayed verbatim and never
- * softened. Scar: "a subagent's 'it works' is a hypothesis" — the same holds
+ * softened. Scar: "a subagent's 'it works' is a hypothesis", and the same holds
  * for the main loop's own "done", which is why something else re-checks it.
  */
 

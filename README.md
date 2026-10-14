@@ -1,13 +1,13 @@
 # receipts
 
-A Claude Code mod that says **UNVERIFIED** when Claude claims done without a check. Under every answer that claims done, a receipt line names the test or build that ran after the last edit, or says that nothing did. It also replaces the wall of tool calls with a progress band that tells the truth.
+A Claude Code mod that says **UNVERIFIED** when Claude claims done without a check. Under every answer that claims done, a receipt line names the command that verified the work after the last edit, with its exit code and the runner's own summary line, or says that nothing did. A second, read-only agent then tries to refute the claim. It also replaces the wall of tool calls with a progress band that shows Claude's own plan.
 
 The name reads like a cost meter, and it isn't one. It's a verification receipt.
 
 It does three jobs:
 
-1. **Receipts.** When the turn ends, if the answer claims done and nothing verified the work after the last edit, a line says so under the answer. If something did, the line shows what ran and how it went, and what the turn cost when Claude Code knows.
-2. **Milestones instead of tool walls.** A bordered band directly above the prompt shows what the turn is working on, what's finished and what's left. At the default quiet level, ordinary tool rows draw nothing, during the turn and after it, and so does most of the chrome a turn scatters. The rows that matter still show, one dim line each with how they ended: the first edit of each file, test and build runs, commits, pull requests, and finished subagents.
+1. **Receipts.** When the turn ends, if the answer claims done and nothing verified the work after the last edit, a line says so under the answer. If something did, the line shows the command, its exit code and its summary line, and what the turn cost when Claude Code knows. A cross-check agent re-runs the gate where it can and says whether it agrees.
+2. **Milestones instead of tool walls.** A bordered band directly above the prompt shows the plan Claude recorded with its task tools: what it's working on, what's finished and what's left. The mod never makes steps up. At the default quiet level, ordinary tool rows draw nothing, during the turn and after it, and so does most of the chrome a turn scatters. The rows that matter still show, one dim line each with how they ended: the first edit of each file, test and build runs, commits, pull requests, and finished subagents.
 3. **An estimate that learns and doesn't lie.** It stays indeterminate until there's a basis. Then it shows a range, names where the range comes from, and shows how often its past ranges were right. The range narrows as steps finish.
 
 Tested with Claude Code 2.1.291. Mods need 2.1.287 or later.
@@ -39,19 +39,24 @@ While a turn runs, the band has an orange border and these rows:
 - **Summary.** `Step 2 of 4`, a full-width bar, the percent done, then the estimate in dim text with its basis, such as `~4 to 9 min · from 3 similar tasks`. The percent is weighted by how long each step is expected to take.
 - **One row per step.** A 12-cell bar for the step and a word: `Working`, `Next`, `Later` or `Done`. At most six steps show, around the current one, then `+n more`.
 
-When the turn ends, the band always leaves the working state. It becomes a completion card and stays until your next prompt:
+The steps are Claude's own, recorded with TaskCreate and TaskUpdate. If Claude records none, there are no steps: the second row reads `working · 1m 13s` with the estimate, and there's no percent to make up.
 
-- **Answered.** A green `✓ Answered · 25s` badge for a turn that was an answer, not a job. A chat, research or writing prompt with no tool call gets one "answer" step instead of a derived plan, and any turn that ends without a tool call ends this way. If the answer turns into work and a tool runs, the mod derives a real plan once.
-- **All done.** A green border and a `✓ All done` badge, only when every step finished. A task-tool plan counts as finished when every task is completed.
-- **Turn ended short.** A grey `■ Turn ended · 2 of 5 steps reached` badge when steps were left. Those steps read `Not reached`, never `Done`.
-- **Verified.** A green border and a `✓ All done · bun test 152 pass` badge, every step ticked with a full bar, and `took 1m 47s` on the right.
-- **Unverified.** A yellow border and a `⚠ Done, unverified` badge. The title row shows the receipt, such as `claimed done, no test/build/run after the last edit (src/x.ts at 14:02)`. When that doesn't fit, it shortens to the file and time first.
-- **A failed check.** A yellow `✗ Done, checks failed` badge and the run that failed.
-- **Stopped.** A grey `■ Stopped` badge when you interrupt the turn.
+When the turn ends, the band always leaves the working state. It becomes one of six cards and stays until your next prompt:
+
+| Card | Border | When |
+| :- | :- | :- |
+| Working | orange | The turn is running |
+| `■ Turn ended · 2 of 5 steps reached` | grey | Steps were left, or work stopped without a claim of done. Unfinished steps read `Not reached`, never `Done`. |
+| `✓ All done` | green | Every recorded step completed, a passing verify ran after the last edit, and the cross-check didn't refute it |
+| `⚠ Done, unverified` | yellow | Claude claims done and nothing verified the work after the last edit. A failing verify reads `✗ Done, checks failed`. |
+| `✗ Done, refuted` | yellow | The cross-check refuted the claim. Its reason sits in the title row, word for word. |
+| `✓ Answered · 25s` | green | The turn was an answer, not a job: no edit and no real command ran |
+
+A grey `■ Stopped` badge shows when you interrupt the turn.
+
+After the steps, a finished card shows the receipt row, the same line printed under the answer, and the cross-check row: `cross-check · running (opus)…`, then `cross-check · ✓ confirmed (opus, reran bun test exit 0) · 38s`, `cross-check · ✗ refuted: tests cover only the happy path`, or `cross-check · ? unclear`.
 
 If agents the turn started are still running when it ends, the title row says `waiting on 2 agents`. The count drops as each one finishes, and the next prompt clears it.
-
-A plan the mod derived marks a step done when a small model says the assistant's latest message finished it. When the turn ends, one more pass reads the final answer against the steps still open and marks the ones it shows were completed. That pass has 1.5 seconds. If it misses, the card says how far the plan got rather than guess.
 
 When the elapsed time passes the top of the range, the border and bar turn grey and the summary reads `over by 2m 10s · ~1 to 4 min more`. Running long isn't an error, so it's never red.
 
@@ -83,38 +88,40 @@ The `[-]` at the top right closes it, as does `t` again. Escape only hands the k
 
 ## The honesty contract
 
-These are the rules the estimate follows. Each one exists because some tool, somewhere, broke it.
+These are the rules the mod follows. Each one exists because some tool, somewhere, broke it.
 
-- **Never a single number.** You always get a range such as `~4 to 9 min`. A countdown never freezes. When the range is too narrow to round to two values, it's widened until it shows two.
-- **"Indeterminate" has a time limit.** You only see it while there's no plan and no history. It ends at the first finished milestone or after 90 seconds, whichever comes first. After that you get a range from the prior, labelled `prior only`.
-- **The source is always named.** Every range says where it comes from: `from 7 similar tasks`, `spike guess`, `prior only`, and `derived plan` when the plan is the mod's own guess.
-- **The mod reports its own score.** `b` in the band, the pane and `/receipts stats` show a line such as `calibration: 61% of 18 tasks ended inside the range`. After 10 or more tasks, if the score falls below 50%, the band says plainly that the ranges have been missing. That warning stays on the band and can't be hidden.
-- **Countdown digits require confidence.** Digits such as `3:52 to 8:40 left` appear only when confidence is 0.5 or higher. Below that you get the rounded range and a bar.
-- **Running over is reported.** When elapsed time passes the top of the range, the row reads `over by 2m 10s`, the bar dims, and the range widens with elapsed time as its floor. It never resets to indeterminate.
-- **The progress bar is weighted by time.** It weights each step by how long that step is expected to take, not by the count of steps.
-- **A derived plan is labelled.** When the assistant didn't make a task list, the mod asks a small model for one and marks it `derived`. The mod never passes its own guess off as the assistant's plan.
+- **Steps are never made up.** A step exists only if Claude recorded it with its task tools. Without a task list the band says `working` and shows the clock. An earlier version guessed plans of 5 or 6 steps for prompts that needed one answer, then reported `1 of 6 reached`.
+- **A receipt is a command, an exit code and a summary line.** The line under the answer names the verify command, its exit code, and the runner's own summary line word for word. Nothing less is called a receipt. A `grep -i error` over a log is flagged as `grep-for-error, not a receipt`, because a warning or a swallowed summary passes that grep.
+- **Only a check after the last edit counts.** A test run before the final edit verifies a different file.
+- **The cross-check is independent.** A separate, read-only agent tries to refute the claim, re-running the verify command where it can. Its verdict is shown word for word and never softened.
+- **All done means all three.** Every recorded step completed, a passing verify after the last edit, and no refutation. Missing any one gives a different card.
+- **Never a single number.** You always get a range such as `~4 to 9 min`. A countdown never freezes. A range that would round to one value is widened until it shows two, and its low end is never 0.
+- **"Indeterminate" has a time limit.** You only see it while there's no plan and no history, for at most 90 seconds. After that you get a range from the prior, labelled `prior only`.
+- **The source is always named.** Every range says where it comes from: `from 7 similar tasks`, `spike guess` or `prior only`.
+- **The mod reports its own score.** `b` in the band, the pane and `/receipts stats` show a line such as `calibration: 61% of 18 tasks ended inside the range`. After 10 or more tasks, if the score falls below 50%, the band says plainly that the ranges have been missing. That warning can't be hidden.
+- **Countdown digits require confidence.** Digits such as `3:52 to 8:40 left` appear only when confidence is 0.5 or higher.
+- **Running over is reported.** When elapsed time passes the top of the range, the row reads `over by 2m 10s` and the range widens with elapsed time as its floor. It never resets to indeterminate.
 - **The rows level only changes drawing.** The transcript is never modified. Set it to Off and every row is back exactly as it was.
-- **The receipt reports and never blocks.** It never stops a turn or holds one back. The worst it does is wait up to 1.5 seconds for a label.
+- **Nothing blocks.** The receipt and the cross-check never stop or hold a turn. The worst the mod does is wait 1 second for the task-type label when you submit a prompt, and 1.5 seconds for the claims-done label when the turn ends.
 
-## How the estimate works
+## How it works
 
-Each task is filed under a shape: task type (build, debug, research, writing, config or refactor), step count (1, 2-3, 4-6 or 7+), a hash of the repository, whether the repository has tests, and the tool mix. Remaining time is the sum of the expected time of each step not yet done. The expectation comes from the most specific shape with at least 3 past tasks. Failing that, it falls back to a coarser shape, and then to a global prior.
+**The plan.** When you submit a prompt, a small model labels its type, waiting at most 1 second. A build, debug, config or refactor prompt goes in with one extra line for Claude, the same bytes every time so the prompt cache holds: "Before non-trivial work, record your plan with TaskCreate as 2 to 8 short steps, mark each in_progress and completed with TaskUpdate as you go, and keep the list current if the plan changes." The band's steps are that list. A chat, research or writing prompt gets one "answer" step. A Read, Grep or a command that only looks around (`git status`, `ls`, `cat`) never changes that. An edit or a real command means work has started. From then on the plan comes from the task tools, or the band says `working`.
 
-The spread counts only the steps that are left, so it shrinks as steps finish. When a shape is new and the plan has 3 or more steps, the mod asks one cheap, read-only subagent for minutes per step. It does this once per task shape per session, with a 60-second limit, and counts the answer as half of one past task. It never does it for research, writing or chat tasks, whose steps are cheap.
+**The estimate.** Each task is filed under a shape: task type, step count (1, 2-3, 4-6 or 7+), a hash of the repository, whether it has tests, and the tool mix. Remaining time is the sum of the expected time of each step not yet done. The expectation comes from the most specific shape with at least 3 past tasks, then a coarser shape, then a global prior. Step durations come from Claude's TaskUpdate transitions, so what the mod learns is real. The spread counts only the steps left, so it shrinks as they finish.
 
-Time spent waiting on a permission prompt isn't learned as work. Claude Code reports each tool's own run time without the prompt. The rest of the call is waiting, and it comes out of the step and the total before they're saved. Calibration is still scored on the wall clock, because that's what the range promised.
+For a build-type task with 3 or more recorded steps and no history, the mod asks one cheap, read-only subagent for minutes per step. It does this at most once per shape per session, with a 60-second limit, and counts the answer as half of one past task.
 
-History lives in the mod's own store. Only finished task records are saved, and the averages are rebuilt from them. The store keeps the newest 500 tasks and stays under 1 MiB.
+Time spent waiting on a permission prompt isn't learned as work. Claude Code reports each tool's own run time without the prompt, and the rest of the call comes out of the step before it's saved. Calibration is still scored on the wall clock, because that's what the range promised. History keeps the newest 500 tasks and stays under 1 MiB.
 
-## Receipts
-
-Each turn keeps a ledger of edits and of shell commands that look like verification: test runners, `tsc`, linters, builds and `make check`. At the end of the turn:
+**The receipt.** Each turn keeps a ledger of edits, of verify commands with their exit codes and summary lines, and of greps for "error". The summary line is the runner's own, found by its known shape: bun's pass and fail lines, jest's `Tests:`, vitest's `Tests`, pytest's `=== … in 0.12s ===`, cargo's `test result:` or `error[E…]`, go's `ok` or `FAIL`, make's `make: *** … Error N`. A small model decides whether the answer claims done. If its label isn't back within 1.5 seconds, plain completion words decide instead.
 
 | What happened | Line under the answer |
 | :- | :- |
-| Edited, claimed done, nothing verified after the last edit | `UNVERIFIED · claimed done, no test/build/run after the last edit (src/x.ts at 14:02)` |
-| Edited, claimed done, a verify run after the last edit | `receipt · bun test ✓ 152 pass · 1m ago` |
-| A verify run after the last edit that failed | `receipt · bun test ✗ exit 1 · 150 pass · 2 fail · 5s ago` |
+| Edited, claimed done, a passing verify after the last edit | `receipt · bun test · exit 0 · 105 pass, 0 fail · 1m ago` |
+| A failing verify after the last edit | `FAILED · cargo test · exit 101 · test result: FAILED. 3 passed; 2 failed; …` |
+| Edited, claimed done, nothing verified after the last edit | `UNVERIFIED · claims done · last edit src/x.ts 14:02 · no verify since` |
+| Only a grep for "error" after the last edit | the UNVERIFIED line, ending `(grep-for-error, not a receipt)` |
 | No edits, or the answer doesn't claim done | nothing |
 
 When Claude Code reports usage, the line ends with what the turn cost:
@@ -125,9 +132,11 @@ When Claude Code reports usage, the line ends with what the turn cost:
 | An API key user, with no windows | `$0.42 this turn` |
 | Neither is known | nothing, never a guess |
 
-If the current turn's receipt line is wrong, for example it called an answer done when it wasn't, run `/receipts wrong`. Each receipt can be marked once. `/receipts stats` shows `claims-done false positives: 1 of 12 receipts (8%)`. That number is the precondition for ever letting the receipt block a turn. See the roadmap.
+**The cross-check.** When a turn with edits claims done, the mod spawns one read-only agent of the Explore type, on opus unless you set `crossCheckModel`. It gets your request and Claude's claim, each up to 800 characters, plus every verify command with its exit code and summary line, and `git diff` of the edited files. A diff over 400 lines is sent as its `--stat`, and the agent is told so. It's told to refute the claim, re-run the verify command if there is one, and call it refuted if unsure. It answers `confirmed`, `refuted` or `unclear` with a short reason, and the card shows that word for word. No answer within 90 seconds counts as unclear. It never blocks the turn and never runs more than once per turn.
 
-A small model decides whether the answer claims done. If its label isn't back within 1.5 seconds, plain completion words in the answer decide instead.
+It's skipped when the turn made no edits, when `crossCheck` is off or `/receipts check off` ran, in `-p` mode, and when the five-hour window is over 85% used. `/receipts stats` counts confirmed, refuted and unclear verdicts.
+
+If the current turn's receipt is wrong, for example it called an answer done when it wasn't, run `/receipts wrong`. Each receipt can be marked once, and `/receipts stats` shows `claims-done false positives: 1 of 12 receipts (8%)`. That number is the precondition for ever letting the receipt block a turn. See the roadmap.
 
 ## Commands
 
@@ -140,6 +149,7 @@ A small model decides whether the answer claims done. If its label isn't back wi
 | `/receipts basis` | Shows or hides the basis tooltip, as `b` does |
 | `/receipts stats` | Shows the calibration history and task counts by type, with median durations |
 | `/receipts wrong` | Marks the current turn's receipt line as a false positive, for the count in stats |
+| `/receipts check [on\|off]` | Turns the cross-check on or off for this session, or says which it is |
 | `/receipts reset-history` | Forgets every learned task |
 
 In the pane, `c` switches the rows level to Off and back, and `b` shows where the estimate comes from.
@@ -172,12 +182,14 @@ Set these under `pluginConfigs` in your Claude Code settings. Use the key `recei
 
 | Key | Default | What it does |
 | :- | :- | :- |
-| `spike` | `true` | Allows the sizing subagent for unfamiliar tasks. Set it to `false` and the mod never spawns one. |
+| `spike` | `true` | Allows the sizing subagent for unfamiliar build-type tasks. Set it to `false` and the mod never spawns one. |
 | `cleanView` | `true` | Starts each session at the quiet rows level. Set it to `false` to start at Off. The popover and `/receipts rows` change it for the session. |
+| `crossCheck` | `true` | Spawns the read-only cross-check agent when a turn with edits claims done |
+| `crossCheckModel` | `opus` | The model the cross-check runs on, as an alias or a model id |
 
 ## What it reaches
 
-The mod calls the model API for its labels and the derived plan, and spawns a subagent for the spike. It makes no other network calls and sends no telemetry of its own. The only thing it writes is its own store.
+The mod calls the model API for its labels, spawns a subagent for the spike and one for the cross-check, and runs `git diff` on the files a turn edited. It makes no other network calls and sends no telemetry of its own. The only thing it writes is its own store.
 
 ## Known issues
 
@@ -190,7 +202,7 @@ The mod calls the model API for its labels and the derived plan, and spawns a su
 
 Each release answers one question it can measure.
 
-- **0.3: can someone use it without a manual?** Everything from the 0.2 brief that hasn't landed yet. The test is a new user reading only the band and `/receipts` help.
+- **0.3: can someone use it without a manual?** Plans are Claude's own, receipts are command, exit code and summary line, and a cross-check re-runs the gate. The test is a new user reading only the band and `/receipts` help.
 - **0.4: does the receipt change behaviour?** The cost line from `$.session.usage()` already shipped in 0.2.2. The rest is an optional gate that turns UNVERIFIED from a mirror into a block, off by default. It ships only after the claims-done classifier's false-positive rate has been measured over enough live turns with `/receipts wrong` and `/receipts stats`. A gate that blocks a finished turn gets the mod uninstalled.
 
 Not planned: token meters, burn bars, or a rename.
@@ -205,6 +217,6 @@ bun scripts/mock-band.ts 155
 bun scripts/check-manifest.ts
 ```
 
-`scripts/mock-band.ts` prints the band as plain text in each state: working, over the range, verified, unverified, narrow, collapsed, with the tooltip, and the popover. It uses the same pure view the mod draws from. The argument is the band's width, which is the terminal's width less 5.
+`scripts/mock-band.ts` prints the band as plain text: the six card states, then working with no task list, over the range, checks failed, narrow, collapsed, and the popover. It uses the same pure view the mod draws from. The argument is the band's width, which is the terminal's width less 5.
 
-`src/` holds the logic as plain modules with no mods API dependency. These are the estimator, history, milestones, ledger, shape, spike, view and band modules, plus a session that talks to Claude Code through a small host interface. `hooks/register.ts` builds that host from `$` and wires the hooks.
+`src/` holds the logic as plain modules with no mods API dependency. These are the estimator, history, milestones, ledger, crosscheck, quiet, shape, spike, view and band modules, plus a session that talks to Claude Code through a small host interface. `hooks/register.ts` builds that host from `$` and wires the hooks.
