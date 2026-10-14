@@ -86,7 +86,7 @@ type Expectation = {
 export function estimate(input: EstimateInput): Estimate {
   const { now, startedAt, plan, stats } = input
   const elapsed = Math.max(0, now - startedAt)
-  const isPlanless = plan.source === 'none' || plan.source === 'fallback'
+  const isPlanless = plan.source === 'none'
   const hasHistory = (stats.get(GLOBAL_KEY)?.total.n ?? 0) > 0
 
   if (isPlanless && !hasHistory && elapsed < INDETERMINATE_CAP_MS && !hasCompleted(plan)) {
@@ -156,7 +156,7 @@ function stepMode(input: EstimateInput, elapsed: number): RangeEstimate {
   const sigma = Math.sqrt(remVar)
   const plannedHigh = (plannedEnd ?? now) - startedAt + pendingMean + K * sigma
   const progress = totalWeight > 0 ? doneWeight / totalWeight : 0
-  const suffix = plan.source === 'derived' ? ' · derived plan' : ''
+  const suffix = ''
   return rangeOf({ elapsed, remMean, sigma, plannedHigh, progress, basis, suffix, stepProgress })
 }
 

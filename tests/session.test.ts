@@ -14,6 +14,7 @@ function fakeHostOf(options: { plan?: string } = {}) {
   const timers: { at: number; fn: () => void; isCancelled: boolean }[] = []
   const store = new Map<string, unknown>()
   const spawned: string[] = []
+  const spawnArgs: { subagentType?: string; model?: string; description?: string }[] = []
   const host: Host = {
     now: async () => now,
     every: () => ({ cancel() {} }),
@@ -39,6 +40,7 @@ function fakeHostOf(options: { plan?: string } = {}) {
       ({ isAnswered: true, text: options.plan ?? '1. Read the code\n2. Fix the bug\n3. Run the tests', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }) as never,
     spawn: async args => {
       spawned.push(args.prompt)
+      spawnArgs.push({ ...(args.subagentType ? { subagentType: args.subagentType } : {}), ...(args.model ? { model: args.model } : {}), ...(args.description ? { description: args.description } : {}) })
       return { model: 'haiku', agentId: `spike-${spawned.length}` }
     },
     cwd: async () => '/work',
@@ -46,6 +48,7 @@ function fakeHostOf(options: { plan?: string } = {}) {
     list: async () => [],
     agents: async () => [],
     usage: async () => ({ rateLimits: [] }),
+    run: async () => ({ exitCode: 0, stdout: '' }),
   }
   const settle = async () => {
     for (let i = 0; i < 50; i += 1) await Promise.resolve()
@@ -60,43 +63,57 @@ function fakeHostOf(options: { plan?: string } = {}) {
     }
     await settle()
   }
-  return { host, store, spawned, settle, advance, now: () => now }
+  return { host, store, spawned, spawnArgs, settle, advance, now: () => now }
 }
 
-const STEP = { answer: 'Looking at the parser.', toolUses: [], stopReason: 'tool_use' }
+/**
+ * Three steps as Claude records them: TaskCreate x3, the first in progress.
+ * 0.3.0: plans are never derived, so the spike and learning tests build
+ * theirs the way Claude does.
+ */
+async function threeSteps(session: ReceiptsSession, host: Host) {
+  for (const [i, subject] of ['Read the code', 'Fix the bug', 'Run the tests'].entries()) {
+    await session.afterTool(host, { tool: 'TaskCreate', tool_use_id: `c${i}` }, { subject }, { result: { task: { id: String(i + 1) } } } as never)
+  }
+  await session.afterTool(host, { tool: 'TaskUpdate', tool_use_id: 'u0' }, { taskId: '1', status: 'in_progress' }, { result: {} } as never)
+}
+
+async function complete(session: ReceiptsSession, host: Host, taskId: string) {
+  await session.afterTool(host, { tool: 'TaskUpdate', tool_use_id: `done-${taskId}` }, { taskId, status: 'completed' }, { result: {} } as never)
+}
 
 describe('session', () => {
   test('the spike answer becomes the basis, named "spike guess"', async () => {
     const fake = fakeHostOf()
     const session = new ReceiptsSession({ spike: true })
     await session.turnStart(fake.host, 't1', 'the parser drops the last line')
-    session.stepResult(fake.host, { turnId: 't1', index: 0 }, STEP)
+    await threeSteps(session, fake.host)
     await fake.settle()
     expect(fake.spawned).toHaveLength(1)
-    expect(session.viewModel(fake.now()).estimate).toMatchObject({ basis: 'prior only · derived plan' })
+    expect(session.viewModel(fake.now()).estimate).toMatchObject({ basis: 'prior only' })
 
     session.subagentComplete(fake.host, 'spike-1', 'Here you go: {"minutes": [1, 2, 3], "confidence": 3}')
     const est = session.viewModel(fake.now()).estimate
-    expect(est).toMatchObject({ kind: 'range', basis: 'spike guess · derived plan', samples: 0.5 })
+    expect(est).toMatchObject({ kind: 'range', basis: 'spike guess', samples: 0.5 })
   })
 
   test('a spike answer after its 60s cap, or for another plan length, is ignored', async () => {
     const fake = fakeHostOf()
     const session = new ReceiptsSession({ spike: true })
     await session.turnStart(fake.host, 't2', 'the parser drops the last line')
-    session.stepResult(fake.host, { turnId: 't2', index: 0 }, STEP)
+    await threeSteps(session, fake.host)
     await fake.settle()
     session.subagentComplete(fake.host, 'spike-1', '{"minutes": [1, 2], "confidence": 3}')
-    expect(session.viewModel(fake.now()).estimate).toMatchObject({ basis: 'prior only · derived plan' })
+    expect(session.viewModel(fake.now()).estimate).toMatchObject({ basis: 'prior only' })
 
     const late = fakeHostOf()
     const other = new ReceiptsSession({ spike: true })
     await other.turnStart(late.host, 't3', 'the parser drops the last line')
-    other.stepResult(late.host, { turnId: 't3', index: 0 }, STEP)
+    await threeSteps(other, late.host)
     await late.settle()
     await late.advance(61_000)
     other.subagentComplete(late.host, 'spike-1', '{"minutes": [1, 2, 3], "confidence": 3}')
-    expect(other.viewModel(late.now()).estimate).toMatchObject({ basis: 'prior only · derived plan' })
+    expect(other.viewModel(late.now()).estimate).toMatchObject({ basis: 'prior only' })
   })
 
   test('a 30s permission prompt inside a step is not learned as work: it teaches a 2s step', async () => {
@@ -146,6 +163,7 @@ describe('session', () => {
       await session.turnComplete(fake.host, { turnId: 'cc', answer: 'Done, tests pass.', isAborted: false, reason: 'answer' })
       await fake.settle()
       expect(fake.spawned).toHaveLength(1)
+      expect(fake.spawnArgs[0]).toEqual({ subagentType: 'Explore', model: 'opus', description: 'receipts: cross-check' })
       session.subagentComplete(fake.host, 'spike-1', answer)
       const card = session.viewModel(fake.now()).finished
       expect(card?.crossCheck).toMatchObject({ state: expected })
@@ -165,13 +183,16 @@ describe('session', () => {
     const fake = fakeHostOf()
     const session = new ReceiptsSession({ spike: false })
     await session.turnStart(fake.host, 't4', 'the parser drops the last line')
-    session.stepResult(fake.host, { turnId: 't4', index: 0 }, STEP)
+    await threeSteps(session, fake.host)
     await fake.settle()
     // A range was shown while three steps were left
     expect(session.viewModel(fake.now()).estimate?.kind).toBe('range')
-    // A tool ran, so the turn was a job, not an answer (which learns as one step)
-    await session.afterTool(fake.host, { tool: 'Read', tool_use_id: 'r1' }, { file_path: '/work/a.ts' }, { result: {} } as never)
-    await fake.advance(4 * 60_000)
+    // The three steps finish 80s apart, as Claude marks them
+    for (const id of ['1', '2', '3']) {
+      await fake.advance(80_000)
+      await complete(session, fake.host, id)
+      if (id !== '3') await session.afterTool(fake.host, { tool: 'TaskUpdate', tool_use_id: `start-${id}` }, { taskId: String(Number(id) + 1), status: 'in_progress' }, { result: {} } as never)
+    }
     const line = await session.turnComplete(fake.host, { turnId: 't4', answer: 'Here is the cause.', isAborted: false, reason: 'answer' })
     expect(line).toBeNull()
 

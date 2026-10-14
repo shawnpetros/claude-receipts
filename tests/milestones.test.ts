@@ -1,14 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import {
-  derivedPlan,
-  emptyPlan,
-  onTaskCreate,
-  onTaskUpdate,
-  onTodoWrite,
-  parseDerivedSteps,
-} from '../src/milestones'
-import { linesOf, PANE, STEP_ANSWERS, step, worldOf } from './fixtures'
+import { emptyPlan, onTaskCreate, onTaskUpdate, onTodoWrite } from '../src/milestones'
+import { linesOf, PANE, worldOf } from './fixtures'
 
 describe('milestones from task tools', () => {
   test('a TaskCreate / TaskUpdate sequence yields the right list and states', () => {
@@ -51,14 +44,8 @@ describe('milestones from task tools', () => {
     expect(plan.items.map(m => m.state)).toEqual(['done', 'current', 'pending'])
   })
 
-  test('a derived plan is labelled derived and holds 2..8 steps', () => {
-    const plan = derivedPlan(['a', 'b', 'c'], 0)
-    expect(plan.source).toBe('derived')
-    expect(plan.items.map(m => m.state)).toEqual(['current', 'pending', 'pending'])
-    expect(parseDerivedSteps('1. Read the code\n2) Fix it\n- Run tests\n\n')).toEqual(['Read the code', 'Fix it', 'Run tests'])
-    expect(parseDerivedSteps('just one line')).toEqual([])
-    expect(parseDerivedSteps(Array.from({ length: 12 }, (_, i) => `${i}. s${i}`).join('\n'))).toHaveLength(8)
-  })
+  // 0.3.0: "a derived plan is labelled derived and holds 2..8 steps" was
+  // deleted with plan derivation (SPEC-0.3 invariant 10)
 })
 
 describe('milestones in the pane', () => {
@@ -80,18 +67,6 @@ describe('milestones in the pane', () => {
     expect(lines.join('\n')).not.toMatch(/derived/)
   })
 
-  test('with no task tools by the first step, the derived plan shows labelled derived', async ($, on) => {
-    const world = worldOf(on, { plan: ['Read the code', 'Fix the bug', 'Run the tests'] })
-    STEP_ANSWERS.set('m2:0', 'Let me look at the parser first.')
-    await $.turn.start({ text: 'fix the parser', turnId: 'm2' })
-    await step($ as never, 'm2', 0)
-    await world.clock.settle()
-
-    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    const lines = linesOf(await ui.drawn())
-    expect(lines.some(line => /derived/.test(line))).toBe(true)
-    expect(lines).toContain('▸ Read the code')
-    expect(lines).toContain('· Run the tests')
-    expect(world.completes).toHaveLength(1)
-  })
+  // 0.3.0: "with no task tools by the first step, the derived plan shows
+  // labelled derived" was deleted with plan derivation (SPEC-0.3 invariant 10)
 })

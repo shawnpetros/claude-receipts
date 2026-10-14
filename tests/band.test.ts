@@ -4,7 +4,7 @@ import { bandView, innerWidthOf, MAX_STEP_ROWS, rowText, type BandView } from '.
 import type { RangeEstimate } from '../src/estimator'
 import type { Milestone, Plan } from '../src/milestones'
 import type { ViewModel } from '../src/view'
-import { BAND, BAND_WIDE, linesOf, step, STEP_ANSWERS, worldOf } from './fixtures'
+import { BAND, BAND_WIDE, linesOf, worldOf } from './fixtures'
 
 const PROMPT = 'Build a weather dashboard for New York City, with a 7-day forecast and an air quality card'
 
@@ -54,7 +54,13 @@ function workingOf(overrides: Partial<ViewModel> = {}): ViewModel {
 
 function doneOf(receipt: string | null): ViewModel {
   const plan = planOf(['Pick the page style and layout', 'Check how the page gets live weather', 'Build the weather dashboard', 'Publish it and share the link'], 4)
-  return workingOf({ plan, estimate: null, isWorking: false, elapsedMs: 107_000, finished: { totalMs: 107_000, receipt, isAborted: false, waitingAgents: 0 } })
+  return workingOf({
+    plan,
+    estimate: null,
+    isWorking: false,
+    elapsedMs: 107_000,
+    finished: { totalMs: 107_000, receipt, isAborted: false, waitingAgents: 0, ledger: 'verified', claimsDone: true, hasWork: true, crossCheck: null },
+  })
 }
 
 const OPTIONS = { collapsed: false, showBasis: false }
@@ -113,8 +119,7 @@ describe('band layout (pure)', () => {
     expect(over.tone).toBe('over')
     expect(rowText(over.rows[1]!)).toMatch(/over by 2m 10s · ~4 to 9 min more · from 3 similar tasks$/)
 
-    const derived = textsOf(bandView(workingOf({ plan: planOf(['a', 'b'], 0, 'derived') }), 155, OPTIONS))
-    expect(derived[1]).toMatch(/^Step 1 of 2 · derived/)
+    // 0.3.0: the "derived" label went with plan derivation
   })
 
   test('calibration is a tooltip on b, except a failing score, which stays', () => {
@@ -127,6 +132,10 @@ describe('band layout (pure)', () => {
   })
 })
 
+// 0.3.0: three card tests were deleted because the 0.2 card they encoded is
+// gone ("verified: the badge carries the receipt", "unverified: a warning
+// badge, and the receipt text in the title row", "a failed verify run is not
+// all done"); the receipt now has its own row. v030.test.ts covers all six states.
 describe('completion card (pure)', () => {
   test('green: "✓ All done", n of n steps, a full bar, took, every step done', () => {
     const view = bandView(doneOf(null), 155, OPTIONS)
@@ -139,31 +148,20 @@ describe('completion card (pure)', () => {
     for (const row of rows.slice(2)) expect(row).toMatch(/^✓ .+█{12} {2}Done/)
   })
 
-  test('verified: the badge carries the receipt', () => {
-    const rows = textsOf(bandView(doneOf('receipt · bun test ✓ 152 pass · 1m ago'), 155, OPTIONS))
-    expect(rows[0]).toMatch(/^ ✓ All done · bun test 152 pass  Build a weather/)
-  })
 
-  test('unverified: a warning badge, and the receipt text in the title row', () => {
-    const view = bandView(doneOf('UNVERIFIED · claimed done, no test/build/run after the last edit (src/x.ts at 14:02)'), 155, OPTIONS)
-    expect(view.tone).toBe('unverified')
-    expect(view.border).toBe('warning')
-    expect(rowText(view.rows[0]!)).toMatch(/^ ⚠ Done, unverified  claimed done, no test\/build\/run after the last edit \(src\/x\.ts at 14:02\)/)
-  })
 
-  test('a failed verify run is not "all done"', () => {
-    const view = bandView(doneOf('receipt · bun test ✗ exit 1 · 150 pass · 2 fail · 5s ago'), 155, OPTIONS)
-    expect(view.tone).toBe('unverified')
-    expect(rowText(view.rows[0]!)).toMatch(/^ ✗ Done, checks failed  bun test ✗ exit 1 · 150 pass · 2 fail/)
-  })
+
+
+
 })
 
 describe('band in the session', () => {
   test('no pane opens unasked; the band draws a round border in the accent colour while working', async ($, on) => {
-    const world = worldOf(on, { plan: ['Read the code', 'Fix the bug'] })
-    STEP_ANSWERS.set('bw1:0', 'Looking.')
+    const world = worldOf(on)
     await $.turn.start({ text: 'fix the loader', turnId: 'bw1' })
-    await step($ as never, 'bw1', 0)
+    await $.tool.call({ tool: 'TaskCreate', subject: 'Read the code', description: 'x' })
+    await $.tool.call({ tool: 'TaskCreate', subject: 'Fix the bug', description: 'x' })
+    await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' })
     await world.clock.settle()
     expect(world.opens).toHaveLength(0)
 
@@ -173,7 +171,7 @@ describe('band in the session', () => {
     expect(drawn.props.borderColor).toBe('claude')
     const lines = linesOf(drawn).join('')
     expect(lines).toMatch(/fix the loader/)
-    expect(lines).toMatch(/Step 1 of 2 · derived/)
+    expect(lines).toMatch(/Step 1 of 2/)
     const row = await ui.find({ key: 'step-0' })
     expect(linesOf({ type: 'Box', children: row?.children })).toContain('Working')
   })
@@ -208,7 +206,8 @@ describe('band in the session', () => {
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
     const drawn = (await ui.drawn()) as unknown as { props: { borderColor?: string } }
     expect(drawn.props.borderColor).toBe('success')
-    expect(linesOf(drawn).join('')).toMatch(/✓ All done · bun test/)
+    expect(linesOf(drawn).join('')).toMatch(/✓ All done/)
+    expect(linesOf(drawn).join('')).toMatch(/receipt · bun test · exit 0/)
     expect(linesOf(drawn).join('')).toMatch(/took 1m 47s/)
 
     await ui.unmount()

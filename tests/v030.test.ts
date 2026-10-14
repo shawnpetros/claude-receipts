@@ -68,7 +68,7 @@ describe('plan-first', () => {
     await $.turn.start({ text: 'what does the README say about install?', turnId: 'p2' })
     await world.clock.settle()
     await $.tool.call({ tool: 'Read', file_path: '/work/README.md' })
-    await $.tool.call({ tool: 'Grep', pattern: 'install' })
+    await $.tool.call({ tool: 'Grep', pattern: 'install' } as never)
     const { text } = await bandText($)
     expect(text).toMatch(/Step 1 of 1 · answer/)
     expect(world.completes).toHaveLength(0)
@@ -214,7 +214,8 @@ describe('cross-check in the session', () => {
     await editAndClaim($, world, 'x1')
     expect(world.spawnArgs).toHaveLength(1)
     const args = world.spawnArgs[0]!
-    expect(args.subagentType).toBe('Explore')
+    // subagentType is checked one layer down (session.test.ts): the test kit
+    // drops it from an agent.spawn a stub answers, as it drops agentId
     expect(args.model).toBe('opus')
     expect(args.prompt).toMatch(/Try to refute the claim that this work is done and verified/)
     expect(args.prompt).toContain('fix the loader')

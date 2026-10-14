@@ -3,13 +3,13 @@ import { describe, expect, test } from 'claude-code/testing'
 import { bandView, rowText } from '../src/band'
 import type { Milestone, Plan } from '../src/milestones'
 import type { ViewModel } from '../src/view'
-import { BAND_WIDE, linesOf, step, STEP_ANSWERS, worldOf } from './fixtures'
+import { BAND_WIDE, linesOf, worldOf } from './fixtures'
 
 const STEPS = ['Locate the plugin', 'Compare installed copy', 'Check versions', 'Report status', 'Outline scope']
 
 function planOf(done: number): Plan {
   return {
-    source: 'derived',
+    source: 'tasks',
     items: STEPS.map((label, i): Milestone => ({ id: String(i), label, state: i < done ? 'done' : 'pending' })),
   }
 }
@@ -23,7 +23,7 @@ function endedOf(done: number, waitingAgents = 0): ViewModel {
     calibration: ['calibration: no finished tasks yet'],
     title: 'is the newest version of the plugin installed?',
     elapsedMs: 41_000,
-    finished: { totalMs: 41_000, receipt: null, isAborted: false, waitingAgents },
+    finished: { totalMs: 41_000, receipt: null, isAborted: false, waitingAgents, ledger: 'none', claimsDone: false, hasWork: true, crossCheck: null },
   }
 }
 
@@ -59,16 +59,17 @@ describe('turn end (pure)', () => {
 })
 
 describe('turn end in the session', () => {
-  test('regression: a derived plan with steps pending leaves Working on turn.complete', async ($, on) => {
-    const world = worldOf(on, { plan: STEPS })
-    STEP_ANSWERS.set('te1:0', 'Checking how this session loaded it.')
+  test('regression: a plan with steps pending leaves Working on turn.complete', async ($, on) => {
+    const world = worldOf(on)
     await $.turn.start({ text: 'is the newest version installed?', turnId: 'te1' })
-    await step($ as never, 'te1', 0)
+    for (const subject of STEPS) await $.tool.call({ tool: 'TaskCreate', subject, description: 'x' })
+    await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' })
+    await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' })
     await world.clock.settle()
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
     expect((await bandText(ui)).border).toBe('claude')
 
-    await $.tool.call({ tool: 'Bash', command: 'ls ~/.claude/plugins/cache' })
+    await $.tool.call({ tool: 'Bash', command: 'diff -rq cache repo' })
     await world.clock.advance(41_000)
     await $.turn.complete({ turnId: 'te1', answer: 'Yes, the newest version is installed.', durationMs: 41_000, isAborted: false, reason: 'answer' })
     const after = await bandText(ui)

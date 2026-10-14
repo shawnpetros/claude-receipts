@@ -12,6 +12,7 @@
 
 import type { Color } from 'claude-code'
 
+import { crossCheckRowOf, type CrossCheck } from './crosscheck'
 import { basisLines, durationOf, estimateRow, type Estimate } from './estimator'
 import type { Milestone, Plan } from './milestones'
 import { truncate, type ViewModel } from './view'
@@ -58,7 +59,7 @@ export type Row = {
   segs: Seg[]
 }
 
-export type BandTone = 'working' | 'over' | 'done' | 'ended' | 'unverified' | 'stopped'
+export type BandTone = 'working' | 'over' | 'done' | 'answered' | 'ended' | 'unverified' | 'refuted' | 'stopped'
 
 export type BandView = {
   tone: BandTone
@@ -151,31 +152,6 @@ function barSegs(progress: number, width: number, color: Color, isDim = false, f
   ]
 }
 
-// ---- receipts on the card ---------------------------------------------------
-
-type Verdict =
-  | { kind: 'none' }
-  | { kind: 'verified'; label: string }
-  | { kind: 'failed'; text: string }
-  | { kind: 'unverified'; text: string; short: string }
-
-/**
- * Reads the receipt line `ledger.receiptLine` wrote back into what the card
- * needs: `receipt · bun test ✓ 152 pass · 1m ago` is verified, labelled
- * `bun test 152 pass`; a ✗ is a failed check; UNVERIFIED is unverified.
- */
-export function verdictOf(receipt: string | null): Verdict {
-  if (!receipt) return { kind: 'none' }
-  if (receipt.startsWith('UNVERIFIED')) {
-    const text = receipt.replace(/^UNVERIFIED · /, '')
-    const where = /\((.+) at (\d{1,2}:\d{2})\)$/.exec(text)
-    return { kind: 'unverified', text, short: where ? `${where[1]} at ${where[2]}, no check after` : text }
-  }
-  const body = receipt.replace(/^receipt · /, '').replace(/ · \d+[smh] ago$/, '')
-  if (body.includes('✗')) return { kind: 'failed', text: body }
-  return { kind: 'verified', label: body.replace(' ✓', '').replace(/\s+/g, ' ').trim() }
-}
-
 // ---- the band ---------------------------------------------------------------
 
 function currentIndexOf(plan: Plan): number {
@@ -187,22 +163,19 @@ function reachedOf(plan: Plan | null): { done: number; total: number } {
   return { done: items.filter(item => item.state === 'done').length, total: items.length }
 }
 
-/** Every step done, or no steps at all to fall short of. */
-function isAllDone(plan: Plan | null): boolean {
-  const { done, total } = reachedOf(plan)
-  return done === total
+function hasSteps(plan: Plan | null): plan is Plan {
+  return plan !== null && plan.items.length > 0
 }
 
-function stepCounterOf(plan: Plan | null): string {
-  if (!plan || plan.items.length === 0) return 'Planning'
+function stepCounterOf(plan: Plan): string {
   const n = plan.items.length
   const current = currentIndexOf(plan)
   const done = plan.items.filter(item => item.state === 'done').length
   const i = current === -1 ? Math.min(done + 1, n) : current + 1
-  return `Step ${i} of ${n}` + (plan.source === 'derived' ? ' · derived' : plan.source === 'answer' ? ' · answer' : '')
+  return `Step ${i} of ${n}` + (plan.source === 'answer' ? ' · answer' : '')
 }
 
-function titleRow(model: ViewModel, width: number, options: BandOptions, tone: BandTone, verdict: Verdict): Row {
+function titleRow(model: ViewModel, width: number, options: BandOptions, tone: BandTone): Row {
   const title = model.title.replace(/\s+/g, ' ').trim() || 'continuing'
   const buttons = [buttonSeg('basis', 'basis', 'b'), space(2), buttonSeg('tools-toggle', 'tools', 't'), space(2)]
   // Not [-]: Claude Code draws its own [-] beside the band, which hides it
@@ -212,63 +185,58 @@ function titleRow(model: ViewModel, width: number, options: BandOptions, tone: B
     const left: Seg[] = [{ text: '✶ ', color: ACCENT, bold: true }, { text: title, bold: true, grow: true }]
     return { key: 'title', segs: line(width, left, [...buttons, { text: durationOf(model.elapsedMs) }, space(1), collapse]) }
   }
-  const waiting = model.finished?.waitingAgents ?? 0
-  const took = `took ${durationOf(model.finished?.totalMs ?? model.elapsedMs)}`
+  const finished = model.finished
+  const totalMs = finished?.totalMs ?? model.elapsedMs
+  const waiting = finished?.waitingAgents ?? 0
   const tail: Seg[] = waiting > 0 ? [{ text: `waiting on ${waiting} ${waiting === 1 ? 'agent' : 'agents'}`, color: WARN }, space(2)] : []
+  const right: Seg[] = [...tail, ...buttons, { text: `took ${durationOf(totalMs)}` }, space(1), collapse]
+  const badgeOf = (text: string, color: Color): Seg => ({ text: ` ${text} `, color, inverse: true, bold: true })
   let badge: Seg
-  let text: Seg
-  switch (verdict.kind) {
-    case 'unverified': {
-      // The file is the point: when the whole receipt does not fit, the
-      // path-first form does, so the cut never lands on the path
-      badge = { text: ' ⚠ Done, unverified ', color: WARN, inverse: true, bold: true }
-      const room = width - [...badge.text].length - 1 - 2 - widthOf([...tail, ...buttons, { text: took }, space(1), collapse])
-      text = { text: [...verdict.text].length <= room ? verdict.text : verdict.short, color: WARN, grow: true }
+  let text: Seg = { text: title, grow: true }
+  switch (tone) {
+    case 'stopped':
+      badge = badgeOf('■ Stopped', OVER)
+      text = { text: title, dim: true, grow: true }
+      break
+    case 'refuted':
+      // The cross-check's reason, verbatim (invariant 12)
+      badge = badgeOf('✗ Done, refuted', WARN)
+      text = { text: finished?.crossCheck && 'reason' in finished.crossCheck ? finished.crossCheck.reason || title : title, color: WARN, grow: true }
+      break
+    case 'unverified':
+      badge = finished?.ledger === 'failed' ? badgeOf('✗ Done, checks failed', WARN) : badgeOf('⚠ Done, unverified', WARN)
+      text = { text: title, color: WARN, grow: true }
+      break
+    case 'ended': {
+      // Steps left, or work with no claim of done: say how far it got.
+      // Scar: a green card over three steps that never ran, read as finished
+      const { done, total } = reachedOf(model.plan)
+      badge = badgeOf(hasSteps(model.plan) && model.plan.source === 'tasks' ? `■ Turn ended · ${done} of ${total} ${total === 1 ? 'step' : 'steps'} reached` : '■ Turn ended', OVER)
       break
     }
-    case 'failed':
-      badge = { text: ' ✗ Done, checks failed ', color: WARN, inverse: true, bold: true }
-      text = { text: verdict.text, color: WARN, grow: true }
-      break
-    case 'verified':
-      badge = { text: ` ✓ All done · ${verdict.label} `, color: DONE, inverse: true, bold: true }
+    case 'answered':
+      // An answer, not a job: the badge carries the time, the right side drops it
+      badge = badgeOf(`✓ Answered · ${durationOf(totalMs)}`, DONE)
       text = { text: title, color: DONE, grow: true }
-      break
+      return { key: 'title', segs: line(width, [badge, space(1), text], [...tail, ...buttons, collapse]) }
     default:
-      if (tone === 'stopped') {
-        badge = { text: ' ■ Stopped ', color: OVER, inverse: true, bold: true }
-        text = { text: title, dim: true, grow: true }
-      } else if (tone === 'ended') {
-        // Steps left when the turn ended: say how far it got, never "done".
-        // Scar: a green card over three steps that never ran, read as finished
-        const { done, total } = reachedOf(model.plan)
-        badge = { text: ` ■ Turn ended · ${done} of ${total} ${total === 1 ? 'step' : 'steps'} reached `, color: OVER, inverse: true, bold: true }
-        text = { text: title, grow: true }
-      } else if (model.plan?.source === 'answer') {
-        // An answer, not a job: the badge carries the time, the right side drops it
-        badge = { text: ` ✓ Answered · ${durationOf(model.finished?.totalMs ?? model.elapsedMs)} `, color: DONE, inverse: true, bold: true }
-        text = { text: title, color: DONE, grow: true }
-        return { key: 'title', segs: line(width, [badge, space(1), text], [...tail, ...buttons, collapse]) }
-      } else {
-        badge = { text: ' ✓ All done ', color: DONE, inverse: true, bold: true }
-        text = { text: title, color: DONE, grow: true }
-      }
+      badge = badgeOf('✓ All done', DONE)
+      text = { text: title, color: DONE, grow: true }
   }
-  return { key: 'title', segs: line(width, [badge, space(1), text], [...tail, ...buttons, { text: took }, space(1), collapse]) }
+  return { key: 'title', segs: line(width, [badge, space(1), text], right) }
 }
 
 function summaryRow(model: ViewModel, width: number, tone: BandTone): Row {
   const plan = model.plan
   if (!model.isWorking) {
-    const n = plan?.items.length ?? 0
-    const done = plan?.items.filter(item => item.state === 'done').length ?? 0
-    const label =
-      `${done} of ${n} ${n === 1 ? 'step' : 'steps'}` +
-      (plan?.source === 'derived' ? ' · derived' : plan?.source === 'answer' ? ' · answer' : '') +
-      (model.finished?.judged ? ' · steps judged from the answer' : '')
-    const progress = n === 0 ? 1 : done / n
+    if (!hasSteps(plan)) {
+      return { key: 'summary', segs: line(width, [{ text: 'no steps recorded (Claude made no task list)', dim: true }], [], 0) }
+    }
+    const { done, total: n } = reachedOf(plan)
+    const label = `${done} of ${n} ${n === 1 ? 'step' : 'steps'}` + (plan.source === 'answer' ? ' · answer' : '')
+    const progress = done / n
     const percent = `${Math.round(progress * 100)}%`.padStart(4)
-    const color = tone === 'done' ? DONE : tone === 'stopped' || tone === 'ended' ? OVER : WARN
+    const color = tone === 'done' || tone === 'answered' ? DONE : tone === 'stopped' || tone === 'ended' ? OVER : WARN
     const barWidth = Math.max(1, width - [...label].length - 2 - percent.length)
     return {
       key: 'summary',
@@ -277,6 +245,14 @@ function summaryRow(model: ViewModel, width: number, tone: BandTone): Row {
   }
   const est: Estimate = model.estimate ?? { kind: 'indeterminate' }
   const isOver = est.kind === 'range' && est.isOver
+  if (!hasSteps(plan)) {
+    // No task list: no steps, no percent. Only what is known: the clock and the estimate
+    const tail = estimateRow(est)
+    return {
+      key: 'summary',
+      segs: line(width, [{ text: `working · ${durationOf(model.elapsedMs)}`, color: ACCENT }, space(2), { text: tail, dim: true, grow: true }], [], 0),
+    }
+  }
   const progress = est.kind === 'range' ? est.progress : 0
   const label = stepCounterOf(plan)
   const percent = `${Math.round(progress * 100)}%`.padStart(4)
@@ -337,7 +313,7 @@ function stepRows(model: ViewModel, width: number, tone: BandTone): Row[] {
     const word = stateWordOf(item, i, firstPending, model.isWorking)
     let bar: Seg[] = []
     if (isWide) {
-      const doneColor = tone === 'working' || tone === 'over' || tone === 'done' ? DONE : OVER
+      const doneColor = tone === 'working' || tone === 'over' || tone === 'done' || tone === 'answered' ? DONE : OVER
       bar =
         item.state === 'done'
           ? barSegs(1, MINI_BAR, doneColor, false, '█', '░')
@@ -354,35 +330,68 @@ function stepRows(model: ViewModel, width: number, tone: BandTone): Row[] {
   return rows
 }
 
-function toneOf(model: ViewModel, verdict: Verdict): BandTone {
+/**
+ * The card a finished turn earns. Invariant 13: All done needs all three:
+ * every recorded step completed, a receipt after the last edit, and no
+ * refutation from the cross-check. Scar: green "All done" over 2 of 5 steps.
+ */
+function toneOf(model: ViewModel): BandTone {
   if (model.isWorking) return model.estimate?.kind === 'range' && model.estimate.isOver ? 'over' : 'working'
-  if (model.finished?.isAborted) return 'stopped'
-  if (verdict.kind === 'unverified' || verdict.kind === 'failed') return 'unverified'
-  return isAllDone(model.plan) ? 'done' : 'ended'
+  const finished = model.finished
+  if (!finished) return 'done'
+  if (finished.isAborted) return 'stopped'
+  if (finished.crossCheck?.state === 'refuted') return 'refuted'
+  if (finished.ledger === 'failed') return 'unverified'
+  const plan = model.plan
+  if (plan && plan.source === 'tasks' && plan.items.some(item => item.state !== 'done')) return 'ended'
+  if (!finished.hasWork) return 'answered'
+  if (finished.ledger === 'unverified') return finished.claimsDone ? 'unverified' : 'ended'
+  return 'done'
 }
 
 const BORDER: Record<BandTone, Color> = {
   working: ACCENT,
   over: OVER,
   done: DONE,
+  answered: DONE,
   ended: OVER,
   unverified: WARN,
+  refuted: WARN,
   stopped: OVER,
+}
+
+/** The receipt row: the line under the answer, coloured by what it says. */
+function receiptRow(receipt: string, width: number): Row {
+  const color = receipt.startsWith('receipt') ? DONE : WARN
+  return { key: 'receipt', segs: line(width, [{ text: receipt, color, grow: true }], [], 0) }
+}
+
+function crossCheckRow(check: CrossCheck, width: number): Row {
+  const seg: Seg =
+    check.state === 'confirmed'
+      ? { text: crossCheckRowOf(check), color: DONE, grow: true }
+      : check.state === 'refuted'
+        ? { text: crossCheckRowOf(check), color: WARN, grow: true }
+        : { text: crossCheckRowOf(check), dim: true, grow: true }
+  return { key: 'cross-check', segs: line(width, [seg], [], 0) }
 }
 
 /**
  * The band: title, summary, one row per step (six at most, then `+n more`),
- * the basis tooltip when asked, and a failing calibration score, which is
- * never folded away (invariant 3: a bad score is displayed, not hidden).
- * Collapsed, the title row alone. `columns` is the band's body width.
+ * the receipt row and the cross-check row once the turn ended, the basis
+ * tooltip when asked, and a failing calibration score, which is never folded
+ * away (invariant 3). Collapsed, the title row alone. `columns` is the
+ * band's body width.
  */
 export function bandView(model: ViewModel, columns: number, options: BandOptions): BandView {
   const width = innerWidthOf(columns)
-  const verdict = model.isWorking ? ({ kind: 'none' } as const) : verdictOf(model.finished?.receipt ?? null)
-  const tone = toneOf(model, verdict)
-  const rows: Row[] = [titleRow(model, width, options, tone, verdict)]
+  const tone = toneOf(model)
+  const rows: Row[] = [titleRow(model, width, options, tone)]
   if (!options.collapsed) {
     rows.push(summaryRow(model, width, tone), ...stepRows(model, width, tone))
+    const finished = model.isWorking ? null : model.finished
+    if (finished?.receipt) rows.push(receiptRow(finished.receipt, width))
+    if (finished?.crossCheck) rows.push(crossCheckRow(finished.crossCheck, width))
     if (options.showBasis) {
       const basis = model.isWorking && model.estimate ? (basisLines(model.estimate)[0] ?? '') : ''
       const text = [basis, model.calibration[0] ?? ''].filter(Boolean).join(' · ')

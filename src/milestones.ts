@@ -1,11 +1,12 @@
 /**
- * Milestones: what the turn is working on, what is finished, what is left
- * (SPEC 2), and which tool rows count as milestone events.
+ * Milestones: what the turn is working on, what is finished, what is left,
+ * and which tool rows count as milestone events.
  *
- * Sources, in order of preference: the task tools the assistant called
- * (TaskCreate / TaskUpdate, or TodoWrite), a plan derived by a model call
- * (labelled `derived`, invariant 9: the mod never passes its own guess off as
- * the assistant's plan), or a single fallback milestone, "the task".
+ * Invariant 10: the mod never invents plan steps. A step exists only if
+ * Claude recorded it with the task tools (TaskCreate / TaskUpdate, or
+ * TodoWrite). Scar: derived plans of 5 or 6 steps for prompts that needed one
+ * answer, ending "1 of 6 reached". Without task tools a turn has no steps:
+ * the band says "working", or for an answer-shaped prompt, one "answer" step.
  */
 
 import { isVerifyCommand } from './ledger'
@@ -20,7 +21,7 @@ export type Milestone = {
   doneAt?: number
 }
 
-export type PlanSource = 'none' | 'tasks' | 'derived' | 'fallback' | 'answer'
+export type PlanSource = 'none' | 'tasks' | 'answer'
 
 export type Plan = {
   source: PlanSource
@@ -39,9 +40,6 @@ export type Todo = {
   activeForm?: string
 }
 
-export const FALLBACK_LABEL = 'the task'
-const MIN_DERIVED = 2
-const MAX_DERIVED = 8
 const MAX_LABEL = 80
 
 export function emptyPlan(): Plan {
@@ -49,7 +47,7 @@ export function emptyPlan(): Plan {
 }
 
 /**
- * A task tool beats a derived or fallback plan: the first TaskCreate drops
+ * A task tool beats an answer plan: the first TaskCreate drops
  * the mod's guess and starts the assistant's own list.
  */
 export function onTaskCreate(plan: Plan, id: string, subject: string, now: number): Plan {
@@ -98,24 +96,12 @@ export function onTodoWrite(plan: Plan, todos: readonly Todo[], now: number): Pl
   return { source: 'tasks', items }
 }
 
-export function derivedPlan(labels: readonly string[], now: number): Plan {
-  return {
-    source: 'derived',
-    items: labels.map((label, i) => ({
-      id: `derived-${i}`,
-      label: labelOf(label),
-      state: i === 0 ? 'current' : 'pending',
-      ...(i === 0 ? { startedAt: now } : {}),
-    })),
-  }
-}
-
 export const ANSWER_LABEL = 'answer the question'
 
 /**
  * One step for a turn that is an answer, not a job: a chat, research or
- * writing prompt with no tool by the first step, or any turn that ends with
- * no tool call at all. Scar: a one-answer prompt drew a five-step derived
+ * writing prompt, or any turn that ends with no work done (a Read is not
+ * work). Scar: a one-answer prompt drew a five-step derived
  * plan and ended "1 of 5 steps reached" though the reply answered it.
  */
 export function answerPlan(startedAt: number, doneAt?: number): Plan {
@@ -126,13 +112,9 @@ export function answerPlan(startedAt: number, doneAt?: number): Plan {
   return { source: 'answer', items: [item] }
 }
 
-export function fallbackPlan(now: number): Plan {
-  return { source: 'fallback', items: [{ id: 'task', label: FALLBACK_LABEL, state: 'current', startedAt: now }] }
-}
-
 /**
  * Marks the first current milestone done and starts the next pending one; a
- * derived step the classifier called done, or the fallback at turn end.
+ * walk through a plan, as the estimator's tests do.
  */
 export function completeCurrent(plan: Plan, now: number): Plan {
   let index = plan.items.findIndex(item => item.state === 'current')
@@ -194,42 +176,6 @@ export function stepDurations(plan: Plan, startedAt: number, pauses: readonly Pa
 export type Pause = {
   at: number
   ms: number
-}
-
-/**
- * The turn ended and a pass over the final answer said it completed the
- * steps at `indexes` too. They and the step under way share the time since
- * the last finished step in equal slices: the mod knows they finished, not
- * when, and an even split teaches less wrong than zero-length steps.
- */
-export function completeAtEnd(plan: Plan, indexes: readonly number[], now: number, startedAt: number): Plan {
-  const current = plan.items.findIndex(item => item.state === 'current')
-  const chosen = indexes.filter(i => plan.items[i] !== undefined && plan.items[i]!.state === 'pending')
-  if (chosen.length === 0) return plan
-  const span = [...new Set([...(current === -1 ? [] : [current]), ...chosen])].sort((a, b) => a - b)
-  const lastDone = plan.items.reduce((at, item) => (item.doneAt !== undefined && item.doneAt > at ? item.doneAt : at), startedAt)
-  const from = Math.min(current === -1 ? lastDone : (plan.items[current]!.startedAt ?? lastDone), now)
-  const slice = (now - from) / span.length
-  const items = plan.items.map((item, i): Milestone => {
-    const k = span.indexOf(i)
-    if (k === -1) return item
-    return { ...item, state: 'done', startedAt: from + k * slice, doneAt: from + (k + 1) * slice }
-  })
-  return { ...plan, items }
-}
-
-/**
- * Lines of a model's plan reply, numbering and bullets stripped; 2..8 steps
- * or none at all.
- */
-export function parseDerivedSteps(text: string): string[] {
-  const steps = text
-    .split('\n')
-    .map(line => line.replace(/^\s*(?:\d+\s*[.):]|[-*•])\s*/, '').trim())
-    .filter(line => line.length > 0)
-    .slice(0, MAX_DERIVED)
-    .map(labelOf)
-  return steps.length >= MIN_DERIVED ? steps : []
 }
 
 export function glyphOf(state: MilestoneState): string {

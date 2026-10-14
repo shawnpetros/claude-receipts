@@ -3,8 +3,6 @@ import { describe, expect, test } from 'claude-code/testing'
 import { HISTORY_KEY, type History } from '../src/history'
 import { BAND_WIDE, linesOf, PANE, step, STEP_ANSWERS, worldOf } from './fixtures'
 
-const STEPS = ['Locate the plugin', 'Compare installed copy', 'Check version numbers', 'Report whether it is current', 'Outline scope']
-const RECAP = 'The cache matches HEAD at c362279, and the manifest version is 0.1.0, so the installed plugin is current.'
 
 async function band($: { ui: { mount: (e: never) => Promise<{ drawn: () => Promise<unknown>; unmount: () => Promise<void> }> } }): Promise<string> {
   const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' } as never)
@@ -13,51 +11,8 @@ async function band($: { ui: { mount: (e: never) => Promise<{ drawn: () => Promi
   return text
 }
 
-// Each turn here calls a tool: a turn with none is an answer and skips the pass
-describe('derived steps at turn end', () => {
-  test('one pass over the final answer marks the steps it completes', async ($, on) => {
-    const world = worldOf(on, { plan: STEPS, stepsDone: '3, 4' })
-    STEP_ANSWERS.set('d1:0', 'Checking how this session loaded it.')
-    await $.turn.start({ text: 'is the newest version installed?', turnId: 'd1' })
-    await step($ as never, 'd1', 0)
-    await world.clock.settle()
-    await $.tool.call({ tool: 'Read', file_path: '/work/package.json' })
-    await $.turn.complete({ turnId: 'd1', answer: RECAP, durationMs: 41_000, isAborted: false, reason: 'answer' })
-
-    const asked = world.completes.filter(prompt => prompt.includes('Steps not yet marked done'))
-    expect(asked).toHaveLength(1)
-    expect(asked[0]).toMatch(/2\. Compare installed copy/)
-    expect(asked[0]).toMatch(/c362279/)
-    const text = await band($ as never)
-    expect(text).toMatch(/Turn ended · 3 of 5 steps reached/)
-    expect(text).toMatch(/Check version numbers.*Done/)
-    expect(text).toMatch(/Report whether it is current.*Done/)
-  })
-
-  test('every step covered: the green card', async ($, on) => {
-    const world = worldOf(on, { plan: STEPS, stepsDone: '2, 3, 4, 5' })
-    STEP_ANSWERS.set('d2:0', 'Looking.')
-    await $.turn.start({ text: 'x', turnId: 'd2' })
-    await step($ as never, 'd2', 0)
-    await world.clock.settle()
-    await $.tool.call({ tool: 'Read', file_path: '/work/package.json' })
-    await $.turn.complete({ turnId: 'd2', answer: RECAP, durationMs: 1, isAborted: false, reason: 'answer' })
-    expect(await band($ as never)).toMatch(/✓ All done/)
-  })
-
-  test('a slow answer misses the deadline and the card says how far it got', async ($, on) => {
-    const world = worldOf(on, { plan: STEPS, stepsDone: '2, 3, 4, 5', modelMs: 5_000 })
-    STEP_ANSWERS.set('d3:0', 'Looking.')
-    await $.turn.start({ text: 'x', turnId: 'd3' })
-    await step($ as never, 'd3', 0)
-    await world.clock.advance(11_000)
-    await $.tool.call({ tool: 'Read', file_path: '/work/package.json' })
-    const done = $.turn.complete({ turnId: 'd3', answer: RECAP, durationMs: 1, isAborted: false, reason: 'answer' })
-    await world.clock.advance(1_600)
-    await done
-    expect(await band($ as never)).toMatch(/Turn ended · 1 of 5 steps reached/)
-  })
-})
+// 0.3.0: "derived steps at turn end" (3 tests) was deleted with the
+// end-of-turn judgement pass over derived plans (SPEC-0.3 invariant 10).
 
 describe('cost on the receipt line', () => {
   async function receiptOf($: never, world: ReturnType<typeof worldOf>, turnId: string, before: () => void, after: () => void): Promise<string> {
@@ -77,7 +32,7 @@ describe('cost on the receipt line', () => {
     const text = await receiptOf($ as never, world, 'c1', () => undefined, () => {
       world.usage = { rateLimits: [{ kind: 'five_hour', percentUsed: 6, resetsAt: resets }], cost: { usd: 0 } }
     })
-    expect(text).toMatch(/^receipt · bun test ✓ · 5s ago · 5h window 6% used, resets 18:30$/)
+    expect(text).toMatch(/^receipt · bun test · exit 0 · 5s ago · 5h window 6% used, resets 18:30$/)
   })
 
   test('API key: dollars this turn', async ($, on) => {
@@ -93,7 +48,7 @@ describe('cost on the receipt line', () => {
   test('unknown: nothing rather than a guess', async ($, on) => {
     const world = worldOf(on, { claimsDone: true })
     const text = await receiptOf($ as never, world, 'c3', () => undefined, () => undefined)
-    expect(text).toMatch(/^receipt · bun test ✓ · 5s ago$/)
+    expect(text).toMatch(/^receipt · bun test · exit 0 · 5s ago$/)
   })
 })
 

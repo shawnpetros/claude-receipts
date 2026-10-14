@@ -34,5 +34,7 @@ export type Host = {
   /** The session's agents, as `$.agent.list()` answers. */
   agents: () => Promise<readonly { id: string; status: string; parentId?: string; spawnedBy?: string }[]>
   /** The session's usage, as `$.session.usage()` answers: rate-limit windows and cost. */
+  /** Runs a command for the cross-check's diff, as `$.process.run`. */
+  run: (argv: readonly string[], cwd: string) => Promise<{ exitCode: number; stdout: string }>
   usage: () => Promise<{ rateLimits: readonly { kind: string; percentUsed: number; resetsAt?: string }[]; cost?: { usd: number } }>
 }

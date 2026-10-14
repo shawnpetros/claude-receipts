@@ -62,8 +62,9 @@ describe('hook budget', () => {
       if (name !== 'turn.complete') expect(ms, `${name} waited on a model call`).toBeLessThanOrEqual(50)
     }
     expect(timings['turn.complete']!).toBeLessThanOrEqual(1_550)
-    // The model calls were made, just not on the hot path
-    expect(world.completes.length).toBeGreaterThan(0)
+    // The labels were asked, just not on the hot path; and no model call makes
+    // up a plan (0.3.0, invariant 10)
     expect(world.classifies.length).toBeGreaterThan(0)
+    expect(world.completes).toHaveLength(0)
   })
 })

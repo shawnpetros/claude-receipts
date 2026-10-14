@@ -6,7 +6,8 @@
  */
 
 import { basisLines, estimateRow, type Estimate } from './estimator'
-import { relativeOf } from './ledger'
+import type { CrossCheck } from './crosscheck'
+import { relativeOf, type LedgerState } from './ledger'
 import { glyphOf, type Plan } from './milestones'
 
 export type Line = {
@@ -28,8 +29,23 @@ export type ViewModel = {
   title: string
   /** Time since the task shown started. */
   elapsedMs: number
-  /** Set once a task finished: how long it took, its receipt line, and whether it was cut short. */
-  finished: { totalMs: number; receipt: string | null; isAborted: boolean; waitingAgents: number; judged?: boolean } | null
+  /** Set once a task finished: what the card needs to pick its state. */
+  finished: Finished | null
+}
+
+export type Finished = {
+  totalMs: number
+  /** The line under the answer, or null when it said nothing. */
+  receipt: string | null
+  isAborted: boolean
+  /** Agents the turn started that were still running when it ended. */
+  waitingAgents: number
+  /** Where the work stands: no edits, verified or failed after the last edit, or neither. */
+  ledger: LedgerState
+  claimsDone: boolean
+  /** Whether work started: an edit, or a Bash that is not a look around. A Read is not work. */
+  hasWork: boolean
+  crossCheck: CrossCheck | null
 }
 
 export const BAR_WIDTH = 24
@@ -51,14 +67,10 @@ export function barOf(progress: number, width: number): string {
 
 function headerOf(plan: Plan): Line {
   switch (plan.source) {
-    case 'derived':
-      return { key: 'plan-header', text: 'plan · derived (the mod\'s guess, not the assistant\'s)', dim: true }
-    case 'fallback':
-      return { key: 'plan-header', text: 'plan · none given', dim: true }
     case 'answer':
       return { key: 'plan-header', text: 'plan · answer (one step: the reply)', dim: true }
     case 'none':
-      return { key: 'plan-header', text: 'plan · waiting for the first step', dim: true }
+      return { key: 'plan-header', text: 'plan · none recorded (Claude made no task list)', dim: true }
     default:
       return { key: 'plan-header', text: 'plan', dim: true }
   }
@@ -103,7 +115,7 @@ export function paneLines(model: ViewModel): Line[] {
   if (model.finished) {
     lines.push({ key: 'finished', text: `finished in ${durationText(model.finished.totalMs)}`, dim: true })
     if (model.finished.receipt) {
-      const isBad = model.finished.receipt.startsWith('UNVERIFIED')
+      const isBad = !model.finished.receipt.startsWith('receipt')
       lines.push({ key: 'receipt', text: model.finished.receipt, ...(isBad ? { color: 'yellow' } : { color: 'green' }) })
     }
   }

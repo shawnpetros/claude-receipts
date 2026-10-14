@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { estimate, estimateRow, INDETERMINATE_CAP_MS, type Estimate } from '../src/estimator'
 import { addTask, emptyHistory, statsOf, type History } from '../src/history'
-import { completeCurrent, derivedPlan, emptyPlan, fallbackPlan, type Plan } from '../src/milestones'
+import { completeCurrent, emptyPlan, type Plan } from '../src/milestones'
 import type { Shape } from '../src/shape'
 
 const T0 = 1_000_000
@@ -28,8 +28,17 @@ function historyOf(count: number): History {
   return history
 }
 
+/** Four steps as Claude records them with the task tools, the first under way. */
 function fourStepPlan(): Plan {
-  return derivedPlan(['read', 'plan', 'edit', 'verify'], T0)
+  return {
+    source: 'tasks',
+    items: ['read', 'plan', 'edit', 'verify'].map((label, i) => ({
+      id: String(i + 1),
+      label,
+      state: i === 0 ? ('current' as const) : ('pending' as const),
+      ...(i === 0 ? { startedAt: T0 } : {}),
+    })),
+  }
 }
 
 function rangeOf(est: Estimate) {
@@ -51,25 +60,16 @@ describe('estimator', () => {
     expect(capped.kind).toBe('range')
     expect(estimateRow(capped)).toMatch(/^~\d+ to \d+ min · prior only$/)
 
-    // The fallback single milestone is no plan: still time-boxed the same way
-    const fallback = estimate({ now: T0 + 5_000, startedAt: T0, plan: fallbackPlan(T0), stats, shape: SHAPE })
-    expect(fallback.kind).toBe('indeterminate')
-    const fallbackCapped = estimate({ now: T0 + INDETERMINATE_CAP_MS, startedAt: T0, plan: fallbackPlan(T0), stats, shape: SHAPE })
-    expect(fallbackCapped.kind).toBe('range')
   })
 
-  test('a first completed milestone ends indeterminate before 90s', () => {
-    const stats = statsOf(emptyHistory())
-    let plan = fallbackPlan(T0)
-    plan = completeCurrent(plan, T0 + 10_000)
-    const est = estimate({ now: T0 + 11_000, startedAt: T0, plan, stats, shape: SHAPE })
-    expect(est.kind).toBe('range')
-  })
+  // 0.3.0: "a first completed milestone ends indeterminate before 90s" was
+  // deleted with the fallback milestone it walked; a plan now exists only
+  // when Claude records one, and a recorded plan is never indeterminate.
 
-  test('a derived plan with no history shows the prior range at once, labelled', () => {
+  test('a recorded plan with no history shows the prior range at once', () => {
     const est = estimate({ now: T0 + 1_000, startedAt: T0, plan: fourStepPlan(), stats: statsOf(emptyHistory()), shape: SHAPE })
     expect(est.kind).toBe('range')
-    expect(estimateRow(est)).toMatch(/· prior only · derived plan$/)
+    expect(estimateRow(est)).toMatch(/· prior only$/)
   })
 
   test('with 3 samples the range narrows monotonically as steps complete', () => {
@@ -82,7 +82,7 @@ describe('estimator', () => {
       // Sample at the start, middle and end of each step
       for (const part of [0, 0.5, 0.95]) {
         const est = rangeOf(estimate({ now: at + STEP_MS[i]! * part, startedAt: T0, plan, stats, shape: SHAPE }))
-        expect(est.basis).toBe('from 3 similar tasks · derived plan')
+        expect(est.basis).toBe('from 3 similar tasks')
         sigmas.push(est.sigmaMs)
         widths.push(est.remainingHighMs - est.remainingLowMs)
       }
@@ -98,7 +98,7 @@ describe('estimator', () => {
 
   test('past the upper bound: over by, lower bound at least elapsed, never indeterminate', () => {
     for (const stats of [statsOf(emptyHistory()), statsOf(historyOf(5))]) {
-      for (const plan of [fallbackPlan(T0), emptyPlan(), fourStepPlan()]) {
+      for (const plan of [emptyPlan(), emptyPlan(), fourStepPlan()]) {
         const elapsed = 4 * 60 * 60_000
         const est = rangeOf(estimate({ now: T0 + elapsed, startedAt: T0, plan, stats, shape: SHAPE }))
         expect(est.isOver).toBe(true)
@@ -107,14 +107,14 @@ describe('estimator', () => {
         expect(estimateRow(est)).toMatch(/^over by \d+h \d+m · ~\d+ to \d+ min more · /)
       }
     }
-    const est = rangeOf(estimate({ now: T0 + 130_000 + 10 * 60_000, startedAt: T0, plan: fallbackPlan(T0), stats: statsOf(emptyHistory()), shape: SHAPE }))
+    const est = rangeOf(estimate({ now: T0 + 130_000 + 10 * 60_000, startedAt: T0, plan: emptyPlan(), stats: statsOf(emptyHistory()), shape: SHAPE }))
     expect(estimateRow(est)).toMatch(/^over by \d+m \d+s · /)
   })
 
   test('the over-by range keeps moving as time passes, never frozen', () => {
     const stats = statsOf(emptyHistory())
-    const a = rangeOf(estimate({ now: T0 + 60 * 60_000, startedAt: T0, plan: fallbackPlan(T0), stats, shape: SHAPE }))
-    const b = rangeOf(estimate({ now: T0 + 61 * 60_000, startedAt: T0, plan: fallbackPlan(T0), stats, shape: SHAPE }))
+    const a = rangeOf(estimate({ now: T0 + 60 * 60_000, startedAt: T0, plan: emptyPlan(), stats, shape: SHAPE }))
+    const b = rangeOf(estimate({ now: T0 + 61 * 60_000, startedAt: T0, plan: emptyPlan(), stats, shape: SHAPE }))
     expect(b.overByMs).toBeGreaterThan(a.overByMs)
     expect(b.totalLowMs).toBeGreaterThan(a.totalLowMs)
   })
@@ -135,7 +135,7 @@ describe('estimator', () => {
     }
     const late = rangeOf(estimate({ now: at + 1_000, startedAt: T0, plan, stats: statsOf(historyOf(30)), shape: SHAPE }))
     expect(late.confidence).toBeGreaterThanOrEqual(0.5)
-    expect(estimateRow(late)).toMatch(/^\d+:\d\d to \d+:\d\d left · from 30 similar tasks · derived plan$/)
+    expect(estimateRow(late)).toMatch(/^\d+:\d\d to \d+:\d\d left · from 30 similar tasks$/)
 
     // The threshold itself, on a hand-made estimate
     const base = { ...late, isOver: false, overByMs: 0, remainingLowMs: 120_000, remainingHighMs: 300_000 }

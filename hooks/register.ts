@@ -13,9 +13,10 @@ import {
   type RowsLevel,
   type Seg,
 } from '../src/band'
+import { PLAN_INSTRUCTION } from '../src/crosscheck'
 import type { Host } from '../src/host'
 import { firstLineOf, handbackLineOf, QuietLog } from '../src/quiet'
-import { PANE_ID, PANE_TITLE, ReceiptsSession } from '../src/session'
+import { BUILD_TYPES, PANE_ID, PANE_TITLE, ReceiptsSession } from '../src/session'
 import { paneLines, toolGroupText, toolResultText, toolRowText, type Line } from '../src/view'
 
 /**
@@ -61,7 +62,7 @@ const spike = atom({ plugin: 'receipts', key: 'spike' }, true)
 const tick = atom({ plugin: 'receipts', key: 'tick' }, 0)
 
 const USAGE =
-  'usage: /receipts (toggle the pane), /receipts tools, /receipts rows [off|clean|quiet], /receipts clean, /receipts basis, /receipts stats, /receipts wrong, /receipts reset-history'
+  'usage: /receipts (toggle the pane), /receipts tools, /receipts rows [off|clean|quiet], /receipts clean, /receipts basis, /receipts stats, /receipts wrong, /receipts check [on|off], /receipts reset-history'
 const PANE_MIN_ROWS = 6
 const PANE_MAX_ROWS = 24
 
@@ -88,6 +89,7 @@ function hostOf($: EngineInterface): Host {
     list: path => $.fs.list(path),
     agents: () => $.agent.list(),
     usage: () => $.session.usage(),
+    run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: 10_000 }),
   }
 }
 
@@ -200,11 +202,17 @@ function outcomeMarkOf(props: { isRunning?: boolean; isErrored?: boolean; isInte
 
 export function register(on: On, options: PluginOptions): void {
   const isSpikeByDefault = options.spike !== false
-  const session = new ReceiptsSession({ spike: isSpikeByDefault })
+  const session = new ReceiptsSession({
+    spike: isSpikeByDefault,
+    crossCheck: options.crossCheck !== false,
+    ...(typeof options.crossCheckModel === 'string' ? { crossCheckModel: options.crossCheckModel } : {}),
+  })
   const quiet = new QuietLog()
   const isCleanByDefault = options.cleanView !== false
 
   on('session.start', async ($, e, next) => {
+    // -p and other headless runs: no cross-check, nobody is there to read it
+    session.setInteractive(e.isInteractive)
     await session.start(hostOf($))
     const stored = await $.state.get({ plugin: 'receipts', key: 'rows' })
     if (stored.version === 0) await applyDefaults($, session, isCleanByDefault, isSpikeByDefault)
@@ -212,7 +220,7 @@ export function register(on: On, options: PluginOptions): void {
       await $.command.register({
         name: 'receipts',
         description: 'Toggle the receipts pane, open its settings, or show calibration stats',
-        argumentHint: '[tools|rows|clean|basis|stats|reset-history]',
+        argumentHint: '[tools|rows|clean|basis|check|stats|wrong|reset-history]',
         immediate: true,
       })
     } catch {
@@ -225,6 +233,16 @@ export function register(on: On, options: PluginOptions): void {
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     await applyDefaults($, session, isCleanByDefault, isSpikeByDefault)
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // A build, debug, config or refactor prompt carries one byte-stable line
+  // asking Claude to record its plan with the task tools, so the band's steps
+  // are Claude's own (invariant 10). The label waits at most 1s; past that
+  // the prompt enters without the line rather than wait
+  on('prompt.submit', async ($, e, next) => {
+    const type = await session.submitType(hostOf($), e.text)
+    if (type === undefined || !BUILD_TYPES.includes(type)) return next(e)
+    return next({ ...e, context: [...(e.context ?? []), PLAN_INSTRUCTION] })
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
@@ -282,6 +300,12 @@ export function register(on: On, options: PluginOptions): void {
       session.toggleBasis()
       $.ui.invalidate('ui.render')
       return { text: session.isBasisShown ? 'basis shown on the band' : 'basis hidden' }
+    }
+    if (arg === 'check' || arg.startsWith('check ')) {
+      const wanted = arg.slice(5).trim()
+      if (wanted === 'on' || wanted === 'off') session.setCrossCheck(wanted === 'on')
+      else if (wanted !== '') return { text: USAGE }
+      return { text: `cross-check ${session.isCrossCheckOn ? 'on' : 'off'}` }
     }
     if (arg === 'wrong') return { text: await session.markWrong(hostOf($)) }
     if (arg === 'clean') return { text: `rows: ${await toggleClean($)}` }

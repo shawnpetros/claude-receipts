@@ -18,10 +18,19 @@ function storedHistory(count: number) {
   return { [HISTORY_KEY]: history }
 }
 
-async function runTask($: never, world: ReturnType<typeof worldOf>, turnId: string, steps: number) {
-  const engine = $ as unknown as { turn: { start: (e: unknown) => Promise<unknown>; complete: (e: unknown) => Promise<unknown> } }
+/**
+ * One task whose plan Claude records with TaskCreate (0.3.0: plans are never
+ * derived), then a few model steps, then the end of the turn.
+ */
+async function runTask($: never, world: ReturnType<typeof worldOf>, turnId: string, steps: number, labels: readonly string[] = ['Read the code', 'Fix the bug', 'Run the tests']) {
+  const engine = $ as unknown as {
+    turn: { start: (e: unknown) => Promise<unknown>; complete: (e: unknown) => Promise<unknown> }
+    tool: { call: (e: unknown) => Promise<unknown> }
+  }
   STEP_ANSWERS.set(`${turnId}:0`, 'Looking at it.')
   await engine.turn.start({ text: 'the parser drops the last line', turnId })
+  await world.clock.settle()
+  for (const subject of labels) await engine.tool.call({ tool: 'TaskCreate', subject, description: 'x' })
   for (let i = 0; i < steps; i += 1) {
     await step($, turnId, i)
     await world.clock.settle()
@@ -51,8 +60,8 @@ describe('spike', () => {
   }
 
   test('a 2-step plan does not spike', async ($, on) => {
-    const world = worldOf(on, { plan: ['Look', 'Answer'] })
-    await runTask($ as never, world, 's3', 3)
+    const world = worldOf(on)
+    await runTask($ as never, world, 's3', 3, ['Look', 'Answer'])
     expect(world.spawns).toHaveLength(0)
   })
 

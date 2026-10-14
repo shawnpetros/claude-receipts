@@ -4,12 +4,23 @@
  * never `$` (see host.ts).
  *
  * Invariant 6, hooks return fast: every model call here starts unawaited
- * (plan derivation, task type, step-done, the spike) except the claims-done
- * label on turn.complete, which waits at most CLAIMS_DEADLINE_MS and then
- * falls back to plain words in the answer. Results are cached per step per
- * turn, so a long turn costs one classify per model step at most.
+ * (the spike, the cross-check) except two labels with deadlines: the task
+ * type at prompt.submit (SUBMIT_DEADLINE_MS, cached for the turn) and the
+ * claims-done label on turn.complete (CLAIMS_DEADLINE_MS, then plain words).
+ *
+ * Invariant 10: the mod never invents plan steps (milestones.ts).
+ * Invariant 13: All done needs every step, a receipt and no refutation (band.ts).
  */
 
+import {
+  CROSS_CHECK_AGENT,
+  CROSS_CHECK_CAP_MS,
+  crossCheckPromptOf,
+  diffForCheck,
+  parseVerdict,
+  USAGE_GUARD_PERCENT,
+  type CrossCheck,
+} from './crosscheck'
 import { estimate, type Estimate } from './estimator'
 import {
   addTask,
@@ -25,25 +36,26 @@ import {
 } from './history'
 import type { Host } from './host'
 import {
+  commandLabelOf,
   emptyLedger,
   exitCodeOf,
+  isGrepForError,
   isVerifyCommand,
+  ledgerStateOf,
   looksDone,
   receiptLine,
+  receiptVerifyOf,
   recordEdit,
+  recordGrep,
   recordVerify,
   type Ledger,
+  type LedgerState,
   type ToolOutcome,
 } from './ledger'
 import {
   answerPlan,
-  completeAtEnd,
-  completeCurrent,
-  derivedPlan,
   editedPathOf,
   emptyPlan,
-  fallbackPlan,
-  finishPlan,
   isComplete,
   isEditTool,
   isMilestoneCommand,
@@ -51,7 +63,6 @@ import {
   onTaskCreate,
   onTaskUpdate,
   onTodoWrite,
-  parseDerivedSteps,
   stepDurations,
   type Pause,
   type Plan,
@@ -77,24 +88,24 @@ export const PANE_TITLE = 'receipts'
 export const CLAIMS_DEADLINE_MS = 1_500
 export const TICK_MS = 1_000
 export const CLAIMS_LABELS = ['claims-done', 'not-claiming-done'] as const
-export const STEP_LABELS = ['step-done', 'step-not-done'] as const
-/** Task types whose steps are cheap: a spike would cost more than it tells. */
-export const NO_SPIKE_TYPES: readonly string[] = ['research', 'writing', 'chat']
-/** Task types whose turns are usually one answer: one step, unless a tool runs. */
+/** Task types that are jobs: asked to record a plan, and the only ones spiked. */
+export const BUILD_TYPES: readonly string[] = ['build', 'debug', 'config', 'refactor']
+/** Task types whose turns are usually one answer: one step, unless work starts. */
 export const ANSWER_TYPES: readonly string[] = ['chat', 'research', 'writing']
-const PLAN_TOOLS: readonly string[] = ['TaskCreate', 'TaskUpdate', 'TodoWrite']
 export const AUDIT_KEY = 'audit'
-const STEPS_DONE_SYSTEM =
-  'You read the final message of a coding assistant and a list of planned steps not yet marked done. ' +
-  'Answer with the numbers of the steps the message shows were completed, comma separated, or "none". No other text.'
-const PLAN_MODEL = 'haiku'
-const PLAN_TIMEOUT_MS = 20_000
-const PLAN_SYSTEM =
-  'You read a request to a coding assistant and its first message, and list the plan it is following ' +
-  'as 2 to 8 steps, one per line, each a short noun phrase of at most 8 words. No other text.'
+/** The task-type label holds a submitted prompt at most this long. */
+export const SUBMIT_DEADLINE_MS = 1_000
+/**
+ * A Bash that only looks around is not work starting. Scar: a single Read
+ * promoted an answer into a fake six-step plan.
+ */
+const LOOKING = /^\s*(git\s+(status|log|diff|show|branch|remote)|ls|cat|head|tail|pwd|echo|which|wc|find|tree|grep|rg)\b/
 
 export type SessionOptions = {
   spike: boolean
+  /** The adversarial cross-check at turn end; on unless set false. */
+  crossCheck?: boolean
+  crossCheckModel?: string
 }
 
 type Snapshot = {
@@ -113,23 +124,17 @@ type TaskState = {
   taskType: TaskType
   /** Settles once the task-type label is in (or failed). */
   typed: Promise<void>
-  isDeriving: boolean
   isSpiked: boolean
   spike?: readonly number[]
-  checkedSteps: Set<number>
   seenEdits: Set<string>
+  /** An edit, or a Bash that does more than look around. A Read is not work. */
+  hasWork: boolean
   claims?: Promise<boolean | undefined>
   /** The last range shown while 2 or more steps were left. */
   beforeFinal?: Snapshot
   firstRange?: Snapshot
   /** Permission waits inside the task, subtracted from what is learned. */
   pauses: Pause[]
-  /** Tool calls this turn; none at all makes the turn an answer. */
-  toolCalls: number
-  /** The first assistant step's text, for a re-derivation. */
-  firstText: string
-  /** An answer plan becomes a derived one at most once, on the first tool call. */
-  isRederived: boolean
   /** The session's cost when the task started, for the turn's share. */
   usdAtStart?: number
 }
@@ -139,6 +144,22 @@ type Audit = {
   shown: number
   /** Of those, the ones the person marked wrong with /receipts wrong. */
   wrong: number
+  confirmed: number
+  refuted: number
+  unclear: number
+}
+
+type Last = {
+  turnId: string
+  plan: Plan
+  prompt: string
+  totalMs: number
+  receipt: string | null
+  isAborted: boolean
+  ledger: LedgerState
+  claimsDone: boolean
+  hasWork: boolean
+  crossCheck: CrossCheck | null
 }
 
 type StepEvent = {
@@ -174,7 +195,12 @@ export class ReceiptsSession {
   private hasTests = false
   private repoEntries: string[] = []
   private task: TaskState | null = null
-  private last: { plan: Plan; prompt: string; totalMs: number; receipt: string | null; isAborted: boolean; judged: boolean } | null = null
+  private last: Last | null = null
+  private isInteractive = true
+  private isCheckOn: boolean
+  private readonly checkModel: string
+  private readonly typeCache = new Map<string, Promise<TaskType>>()
+  private readonly checkWaiters = new Map<string, { turnId: string; startedAt: number; command?: string }>()
   /** Agents the main loop started that were still running when its turn ended. */
   private waiting = new Set<string>()
   /** Shapes already spiked this session: one guess per shape is enough. */
@@ -183,7 +209,7 @@ export class ReceiptsSession {
   private readonly toolEnds = new Map<string, number>()
   private readonly toolRuns = new Map<string, number>()
   private lastTickAt = 0
-  private audit: Audit = { shown: 0, wrong: 0 }
+  private audit: Audit = { shown: 0, wrong: 0, confirmed: 0, refuted: 0, unclear: 0 }
   private lastReceipt: { turnId: string; isMarked: boolean } | null = null
   private readonly milestoneIds = new Set<string>()
   private readonly spikeWaiters = new Map<string, TaskState>()
@@ -194,7 +220,47 @@ export class ReceiptsSession {
   private cwd = ''
   private effort: string | undefined
 
-  constructor(private readonly options: SessionOptions) {}
+  constructor(private readonly options: SessionOptions) {
+    this.isCheckOn = options.crossCheck !== false
+    this.checkModel = options.crossCheckModel?.trim() || 'opus'
+  }
+
+  /**
+   * The task-type label for a prompt, asked once per text and shared by
+   * prompt.submit (which decides the plan instruction) and turn.start.
+   */
+  classifyPrompt(host: Host, text: string): Promise<TaskType> {
+    const key = text.slice(0, 4_000)
+    let typed = this.typeCache.get(key)
+    if (!typed) {
+      typed = text.trim()
+        ? host
+            .classify(key, TASK_TYPES)
+            .then(label => ((TASK_TYPES as readonly string[]).includes(label ?? '') ? (label as TaskType) : 'unknown'))
+            .catch(() => 'unknown' as const)
+        : Promise.resolve('unknown' as const)
+      this.typeCache.set(key, typed)
+      if (this.typeCache.size > 20) this.typeCache.delete(this.typeCache.keys().next().value!)
+    }
+    return typed
+  }
+
+  /** The type in time for prompt.submit, or undefined past SUBMIT_DEADLINE_MS. */
+  submitType(host: Host, text: string): Promise<TaskType | undefined> {
+    return this.withDeadline(host, this.classifyPrompt(host, text), SUBMIT_DEADLINE_MS)
+  }
+
+  setInteractive(isInteractive: boolean): void {
+    this.isInteractive = isInteractive
+  }
+
+  setCrossCheck(isOn: boolean): void {
+    this.isCheckOn = isOn
+  }
+
+  get isCrossCheckOn(): boolean {
+    return this.isCheckOn
+  }
 
   async start(host: Host): Promise<void> {
     await this.load(host)
@@ -216,14 +282,10 @@ export class ReceiptsSession {
       ledger: emptyLedger(),
       taskType: 'unknown',
       typed: Promise.resolve(),
-      isDeriving: false,
       isSpiked: false,
-      checkedSteps: new Set(),
       seenEdits: new Set(),
+      hasWork: false,
       pauses: [],
-      toolCalls: 0,
-      firstText: '',
-      isRederived: false,
     }
     this.task = task
     this.last = null
@@ -231,14 +293,14 @@ export class ReceiptsSession {
     this.lastReceipt = null
     // The fallback for an agent whose end never reached us: the next prompt
     this.waiting.clear()
-    if (text.trim()) {
-      task.typed = host
-        .classify(text.slice(0, 4_000), TASK_TYPES)
-        .then(label => {
-          task.taskType = (TASK_TYPES as readonly string[]).includes(label ?? '') ? (label as TaskType) : 'unknown'
-        })
-        .catch(() => undefined)
-    }
+    task.typed = this.classifyPrompt(host, text).then(type => {
+      task.taskType = type
+      // An answer-shaped prompt gets one step, unless work has started
+      if (this.task === task && task.plan.source === 'none' && !task.hasWork && ANSWER_TYPES.includes(type)) {
+        task.plan = answerPlan(task.startedAt)
+        host.redraw()
+      }
+    })
     this.startTicker(host, now)
     const usage = await host.usage().catch(() => null)
     if (usage?.cost) task.usdAtStart = usage.cost.usd
@@ -249,24 +311,13 @@ export class ReceiptsSession {
   }
 
   /**
-   * After each model request: derive a plan if the first step brought no
-   * task tools, ask whether the current derived step is done, and start the
-   * claims-done label as soon as the final answer exists.
+   * After each model request: start the claims-done label as soon as the
+   * final answer exists. No plan is derived here or anywhere (invariant 10).
    */
   stepResult(host: Host, e: StepEvent, result: StepResult): void {
     const task = this.task
     if (!task || e.agentId !== undefined || e.turnId !== task.turnId) return
-    const usesTaskTools = result.toolUses.some(use => use.name === 'TaskCreate' || use.name === 'TodoWrite')
-    if (task.plan.source === 'none' && !task.isDeriving && !usesTaskTools) {
-      task.isDeriving = true
-      task.firstText = result.answer
-      void this.derive(host, task, result.answer, result.toolUses.length === 0)
-    }
     const answer = result.answer.trim()
-    if (task.plan.source === 'derived' && answer && !task.checkedSteps.has(e.index)) {
-      task.checkedSteps.add(e.index)
-      void this.checkStep(host, task, answer)
-    }
     if (result.stopReason === 'end_turn' && answer && task.ledger.edits.length > 0) {
       task.claims = this.claimsDone(host, answer)
     }
@@ -300,7 +351,6 @@ export class ReceiptsSession {
       this.settlePause(e.tool_use_id)
     }
     task.counts = countTool(task.counts, e.tool)
-    task.toolCalls += 1
     const fields = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
     const result = outcome.result as Record<string, unknown> | undefined
     const isOk = outcome.deny === undefined && !outcome.isError
@@ -321,8 +371,14 @@ export class ReceiptsSession {
     } else if (isEditTool(e.tool) && isOk) {
       const path = editedPathOf(e.tool, input)
       if (path !== undefined) task.ledger = recordEdit(task.ledger, path, now)
+      this.workStarted(task)
     } else if (e.tool === 'Bash' && outcome.deny === undefined && typeof fields.command === 'string') {
       const interrupted = (result as { interrupted?: unknown } | undefined)?.interrupted === true
+      if (isGrepForError(fields.command)) {
+        task.ledger = recordGrep(task.ledger, fields.command, now)
+      } else if (!LOOKING.test(fields.command)) {
+        this.workStarted(task)
+      }
       if (isVerifyCommand(fields.command) && !interrupted) {
         const stdout = typeof result?.stdout === 'string' ? result.stdout : ''
         const stderr = typeof result?.stderr === 'string' ? result.stderr : ''
@@ -331,17 +387,20 @@ export class ReceiptsSession {
       }
     }
 
-    // An answer that turned into work: derive the real plan, once
-    if (task.plan.source === 'answer' && !task.isRederived && !PLAN_TOOLS.includes(e.tool)) {
-      task.isRederived = true
-      void this.derive(host, task, task.firstText, false)
-    }
-
     if (isPlanChanged) {
       this.observe(now)
       void this.maybeSpike(host, task)
       host.redraw()
     }
+  }
+
+  /**
+   * Work started: an answer plan no longer fits. The plan comes from the
+   * task tools, or the band says "working"; never a made-up list.
+   */
+  private workStarted(task: TaskState): void {
+    task.hasWork = true
+    if (task.plan.source === 'answer') task.plan = emptyPlan()
   }
 
   /**
@@ -361,37 +420,47 @@ export class ReceiptsSession {
     this.ticker = null
     const now = await host.now()
 
-    // Both labels run at once, under one deadline: the claims-done label, and
-    // for a derived plan which of its open steps the final answer completed
     const hasEdits = task.ledger.edits.length > 0 && !e.isAborted
-    // No tool call and a reply: the turn was an answer, whatever plan the mod
-    // guessed, and it ends Answered without waiting on the judgement pass
-    const isAnswer = task.toolCalls === 0 && e.answer.trim() !== '' && !e.isAborted
-    const [claims, finishedSteps] = await Promise.all([
-      hasEdits ? this.withDeadline(host, task.claims ?? this.claimsDone(host, e.answer), CLAIMS_DEADLINE_MS) : Promise.resolve(undefined),
-      e.isAborted || isAnswer ? Promise.resolve(undefined) : this.withDeadline(host, this.stepsDoneBy(host, task, e.answer), CLAIMS_DEADLINE_MS),
-    ])
-    let line: string | null = null
-    if (hasEdits) line = receiptLine(task.ledger, claims ?? looksDone(e.answer), now, task.cwd)
+    const claims = hasEdits ? await this.withDeadline(host, task.claims ?? this.claimsDone(host, e.answer), CLAIMS_DEADLINE_MS) : undefined
+    const claimsDone = hasEdits ? (claims ?? looksDone(e.answer)) : false
+    const line = hasEdits ? receiptLine(task.ledger, claimsDone, now, task.cwd) : null
 
-    const judged = !isAnswer && finishedSteps !== undefined && finishedSteps.length > 0
-    const answered = judged ? completeAtEnd(task.plan, finishedSteps, now, task.startedAt) : task.plan
-    const plan = isAnswer
-      ? answerPlan(task.startedAt, now)
-      : finishPlan(answered.source === 'none' ? fallbackPlan(task.startedAt) : answered, now)
+    // Steps come only from the task tools: they stand as Claude left them.
+    // A turn with no work and a reply was an answer, whatever else ran
+    const isAnswer = !task.hasWork && task.plan.source !== 'tasks' && e.answer.trim() !== '' && !e.isAborted
+    const plan = isAnswer ? answerPlan(task.startedAt, now) : task.plan.source === 'answer' ? emptyPlan() : task.plan
     const totalMs = Math.max(0, now - task.startedAt)
-    this.last = { plan, prompt: task.prompt, totalMs, receipt: line, isAborted: e.isAborted, judged }
+    const usage = await host.usage().catch(() => null)
+    const isCrossChecked =
+      hasEdits &&
+      claimsDone &&
+      this.isCheckOn &&
+      this.isInteractive &&
+      !(usage?.rateLimits.some(limit => limit.kind === 'five_hour' && limit.percentUsed > USAGE_GUARD_PERCENT) ?? false)
+    this.last = {
+      turnId: task.turnId,
+      plan,
+      prompt: task.prompt,
+      totalMs,
+      receipt: line,
+      isAborted: e.isAborted,
+      ledger: e.isAborted ? 'none' : ledgerStateOf(task.ledger),
+      claimsDone,
+      hasWork: task.hasWork,
+      crossCheck: isCrossChecked ? { state: 'running', model: this.checkModel } : null,
+    }
+    if (isCrossChecked) void this.crossCheck(host, task, e.answer, now)
     let shown = line
     if (line) {
       this.audit = { ...this.audit, shown: this.audit.shown + 1 }
       this.lastReceipt = { turnId: task.turnId, isMarked: false }
       await host.storeSet(AUDIT_KEY, this.audit).catch(() => undefined)
-      const cost = await this.costOf(host, task)
+      const cost = this.costOf(usage, task)
       if (cost) shown = `${line} · ${cost}`
     }
 
-    // A task-tool plan finished only when every item did; a derived or
-    // fallback plan finished when the turn answered.
+    // A task-tool plan finished only when every item did; an answer, or work
+    // with no task list, finished when the turn answered
     const isFinished = plan.source === 'tasks' ? isComplete(plan) : true
     if (isOwn && !e.isAborted && e.reason === 'answer' && isFinished) {
       const range = task.beforeFinal ?? task.firstRange
@@ -415,37 +484,11 @@ export class ReceiptsSession {
   }
 
   /**
-   * One pass over the final answer for a derived plan: which of the steps not
-   * yet done does it show were completed? Indexes into the plan; none for a
-   * plan of another source, or when nothing is open.
-   */
-  private async stepsDoneBy(host: Host, task: TaskState, answer: string): Promise<number[]> {
-    if (task.plan.source !== 'derived' || !answer.trim()) return []
-    const open = task.plan.items.map((item, i) => ({ item, i })).filter(({ item }) => item.state === 'pending')
-    if (open.length === 0) return []
-    try {
-      const reply = await host.complete({
-        model: PLAN_MODEL,
-        system: STEPS_DONE_SYSTEM,
-        prompt: `Steps not yet marked done:\n${open.map(({ item, i }) => `${i + 1}. ${item.label}`).join('\n')}\n\nThe final message:\n${answer.slice(0, 4_000)}`,
-        maxTokens: 40,
-        timeoutMs: CLAIMS_DEADLINE_MS,
-      })
-      if (!reply.isAnswered) return []
-      const wanted = new Set(open.map(({ i }) => i))
-      return [...reply.text.matchAll(/\d+/g)].map(match => Number(match[0]) - 1).filter(i => wanted.has(i))
-    } catch {
-      return []
-    }
-  }
-
-  /**
    * What the turn cost, for the receipt line: a plan user's five-hour window
    * and its reset, an API user's dollars this turn, or nothing when neither
    * is known. Never a guess.
    */
-  private async costOf(host: Host, task: TaskState): Promise<string | null> {
-    const usage = await host.usage().catch(() => null)
+  private costOf(usage: Awaited<ReturnType<Host['usage']>> | null, task: TaskState): string | null {
     if (!usage) return null
     const window = usage.rateLimits.find(limit => limit.kind === 'five_hour')
     if (window) {
@@ -469,6 +512,67 @@ export class ReceiptsSession {
     await host.storeSet(AUDIT_KEY, this.audit).catch(() => undefined)
     return `marked wrong · ${this.auditLine()}`
   }
+
+  /**
+   * The adversarial cross-check (invariant 12): one read-only agent per
+   * turn, handed the ask, the claim, what ran and the diff, told to refute.
+   * Its verdict lands on the card when its turn ends; silence past
+   * CROSS_CHECK_CAP_MS is unclear. Never blocks the turn.
+   */
+  private async crossCheck(host: Host, task: TaskState, claim: string, now: number): Promise<void> {
+    const files = [...new Set(task.ledger.edits.map(edit => edit.path))]
+    const ledgerLines = [
+      ...task.ledger.verifies.map(run => [commandLabelOf(run.command), `exit ${run.exitCode}`, ...(run.summary ? [run.summary] : [])].join(' · ')),
+      ...task.ledger.greps.map(grep => `${grep.command} · grep-for-error, not a receipt`),
+    ]
+    const diffOf = async (argv: string[]) => (await host.run(argv, task.cwd).catch(() => null))?.stdout ?? ''
+    const diff = await diffOf(['git', 'diff', '--', ...files])
+    const body = diff.split('\n').length > 400 ? diffForCheck(diff, await diffOf(['git', 'diff', '--stat', '--', ...files])) : diff
+    const command = receiptVerifyOf(task.ledger)?.command
+    const turnId = task.turnId
+    // The verdict lands at once; its elapsed time follows when the clock answers
+    const settle = (verdict: ReturnType<typeof parseVerdict>, at?: number) => {
+      if (this.last?.turnId !== turnId || this.last.crossCheck?.state !== 'running') return
+      const last = this.last
+      if (at === undefined) {
+        void host.now().then(later => {
+          if (last.crossCheck && last.crossCheck.state !== 'running') last.crossCheck = { ...last.crossCheck, ms: Math.max(0, later - now) }
+          host.redraw()
+        })
+      }
+      last.crossCheck = {
+        state: verdict.verdict,
+        model: this.checkModel,
+        reason: verdict.reason,
+        reran: verdict.reran,
+        exit: verdict.exit,
+        ...(command ? { command: commandLabelOf(command) } : {}),
+        ms: at === undefined ? 0 : Math.max(0, at - now),
+      }
+      this.audit = { ...this.audit, [verdict.verdict]: this.audit[verdict.verdict] + 1 }
+      void host.storeSet(AUDIT_KEY, this.audit).catch(() => undefined)
+      host.redraw()
+    }
+    host.after(CROSS_CHECK_CAP_MS, () => settle({ verdict: 'unclear', reason: 'no verdict within 90s', reran: false, exit: null }, now + CROSS_CHECK_CAP_MS))
+    try {
+      const spawned = await host.spawn({
+        prompt: crossCheckPromptOf({ ask: task.prompt, claim, ledger: ledgerLines, diff: body, files }),
+        description: 'receipts: cross-check',
+        subagentType: CROSS_CHECK_AGENT,
+        model: this.checkModel,
+      })
+      if (spawned.deny !== undefined) {
+        settle({ verdict: 'unclear', reason: `not started: ${spawned.deny}`, reran: false, exit: null }, await host.now())
+        return
+      }
+      if (spawned.agentId !== undefined) this.checkWaiters.set(spawned.agentId, { turnId, startedAt: now, ...(command ? { command } : {}) })
+      this.checkSettlers.set(turnId, settle)
+    } catch {
+      settle({ verdict: 'unclear', reason: 'could not start', reran: false, exit: null }, await host.now())
+    }
+  }
+
+  private readonly checkSettlers = new Map<string, (verdict: ReturnType<typeof parseVerdict>, at?: number) => void>()
 
   private auditLine(): string {
     const { shown, wrong } = this.audit
@@ -541,6 +645,14 @@ export class ReceiptsSession {
    */
   subagentComplete(host: Host, agentId: string, answer: string): void {
     if (this.waiting.delete(agentId)) host.redraw()
+    const check = this.checkWaiters.get(agentId)
+    if (check) {
+      this.checkWaiters.delete(agentId)
+      const settle = this.checkSettlers.get(check.turnId)
+      this.checkSettlers.delete(check.turnId)
+      settle?.(parseVerdict(answer))
+      return
+    }
     const task = this.spikeWaiters.get(agentId)
     if (!task) return
     this.spikeWaiters.delete(agentId)
@@ -565,7 +677,16 @@ export class ReceiptsSession {
       title: task ? task.prompt : (this.last?.prompt ?? ''),
       elapsedMs: task ? Math.max(0, now - task.startedAt) : (this.last?.totalMs ?? 0),
       finished: this.last
-        ? { totalMs: this.last.totalMs, receipt: this.last.receipt, isAborted: this.last.isAborted, waitingAgents: this.waiting.size, judged: this.last.judged }
+        ? {
+            totalMs: this.last.totalMs,
+            receipt: this.last.receipt,
+            isAborted: this.last.isAborted,
+            waitingAgents: this.waiting.size,
+            ledger: this.last.ledger,
+            claimsDone: this.last.claimsDone,
+            hasWork: this.last.hasWork,
+            crossCheck: this.last.crossCheck,
+          }
         : null,
     }
   }
@@ -646,7 +767,11 @@ export class ReceiptsSession {
 
   statsText(): string {
     const tasks = this.history.tasks
-    const audit = `${this.auditLine()}; mark a wrong one with /receipts wrong`
+    const { confirmed, refuted, unclear } = this.audit
+    const audit = [
+      `${this.auditLine()}; mark a wrong one with /receipts wrong`,
+      `cross-checks: ${confirmed} confirmed, ${refuted} refuted, ${unclear} unclear`,
+    ].join('\n')
     if (tasks.length === 0) return ['no finished tasks yet; the estimate runs on its prior until a few land', audit].join('\n')
     const byType = new Map<string, number[]>()
     for (const task of tasks) {
@@ -682,7 +807,10 @@ export class ReceiptsSession {
     const raw = await host.storeGet(HISTORY_KEY).catch(() => undefined)
     this.history = parseHistory(raw)
     const audit = (await host.storeGet(AUDIT_KEY).catch(() => undefined)) as Partial<Audit> | undefined
-    if (typeof audit?.shown === 'number' && typeof audit.wrong === 'number') this.audit = { shown: audit.shown, wrong: audit.wrong }
+    if (typeof audit?.shown === 'number' && typeof audit.wrong === 'number') {
+      const count = (n: unknown) => (typeof n === 'number' ? n : 0)
+      this.audit = { shown: audit.shown, wrong: audit.wrong, confirmed: count(audit.confirmed), refuted: count(audit.refuted), unclear: count(audit.unclear) }
+    }
     this.stats = statsOf(this.history)
   }
 
@@ -746,61 +874,6 @@ export class ReceiptsSession {
     host.redraw()
   }
 
-  /**
-   * The plan when the assistant made none. An answer-shaped prompt (chat,
-   * research, writing) with no tool by the first step gets one "answer"
-   * step and no model call; anything else, or an answer that later calls a
-   * tool, gets a derived plan of 2 to 8 steps.
-   */
-  private async derive(host: Host, task: TaskState, firstText: string, mayAnswer: boolean): Promise<void> {
-    const replacing = task.plan.source
-    if (mayAnswer) {
-      await task.typed
-      if (ANSWER_TYPES.includes(task.taskType) && task.toolCalls === 0) {
-        if (this.task !== task || task.plan.source !== 'none') return
-        task.plan = answerPlan(task.startedAt)
-        this.observe(await host.now())
-        host.redraw()
-        return
-      }
-    }
-    let labels: string[] = []
-    if (task.prompt.trim()) {
-      try {
-        const reply = await host.complete({
-          model: PLAN_MODEL,
-          system: PLAN_SYSTEM,
-          prompt: `The request:\n${task.prompt.slice(0, 4_000)}\n\nThe assistant's first message:\n${firstText.slice(0, 2_000) || '(none yet)'}`,
-          maxTokens: 300,
-          timeoutMs: PLAN_TIMEOUT_MS,
-        })
-        if (reply.isAnswered) labels = parseDerivedSteps(reply.text)
-      } catch {
-        // No plan from the model: fall back to the single milestone
-      }
-    }
-    // Task tools may have arrived meanwhile; they win
-    if (this.task !== task || task.plan.source !== replacing) return
-    task.plan = labels.length > 0 ? derivedPlan(labels, task.startedAt) : fallbackPlan(task.startedAt)
-    this.observe(await host.now())
-    void this.maybeSpike(host, task)
-    host.redraw()
-  }
-
-  private async checkStep(host: Host, task: TaskState, answer: string): Promise<void> {
-    const current = task.plan.items.find(item => item.state === 'current')
-    if (!current) return
-    const label = await host
-      .classify(`Planned step: "${current.label}"\n\nThe assistant's latest message:\n${answer.slice(0, 3_000)}`, STEP_LABELS)
-      .catch(() => undefined)
-    if (label !== 'step-done' || this.task !== task) return
-    if (task.plan.items.find(item => item.state === 'current')?.id !== current.id) return
-    const now = await host.now()
-    task.plan = completeCurrent(task.plan, now)
-    this.observe(now)
-    host.redraw()
-  }
-
   private claimsDone(host: Host, answer: string): Promise<boolean | undefined> {
     return host
       .classify(`The final message of a coding assistant to its user:\n${answer.slice(0, 4_000)}`, CLAIMS_LABELS)
@@ -809,19 +882,19 @@ export class ReceiptsSession {
   }
 
   /**
-   * Once per task, for an unfamiliar shape with a plan of SPIKE_MIN_STEPS or
-   * more, and only when the user has not turned the spike off.
+   * Once per shape per session, for a build-type task whose recorded plan has
+   * SPIKE_MIN_STEPS or more and no history, unless the user turned it off.
    */
   private async maybeSpike(host: Host, task: TaskState): Promise<void> {
     if (!this.options.spike || task.isSpiked) return
     if (task.plan.items.length < SPIKE_MIN_STEPS) return
-    if (task.plan.source === 'none' || task.plan.source === 'fallback') return
+    if (task.plan.source !== 'tasks') return
     task.isSpiked = true
     await Promise.all([this.probing, task.typed])
     if (bucketSamples(this.stats, this.shapeOf(task)) >= 3) return
     // Once per shape per session, and never for cheap task types. Scar: a
     // cheap subagent per prompt in an unfamiliar repo (the 0.2.0 live run)
-    if (NO_SPIKE_TYPES.includes(task.taskType)) return
+    if (!BUILD_TYPES.includes(task.taskType)) return
     const shape = this.shapeOf(task)
     const shapeKey = `${shape.taskType}|${shape.steps}|${shape.repo}`
     if (this.spikedShapes.has(shapeKey)) return
