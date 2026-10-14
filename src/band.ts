@@ -1,5 +1,5 @@
 /**
- * The band above the prompt and the settings popover, as rows of styled
+ * The band above the prompt and the tools panel, as rows of styled
  * segments, each row exactly the width it is given. Pure: no `$`, no
  * elements. `hooks/register.ts` turns a segment into a Text (or a Button
  * when it carries one) and a row into a Box; tests and `scripts/mock-band.ts`
@@ -430,7 +430,7 @@ export function bandView(model: ViewModel, columns: number, options: BandOptions
   return { tone, border: BORDER[tone], rows }
 }
 
-// ---- the settings popover ---------------------------------------------------
+// ---- the tools panel ------------------------------------------------------
 
 /** The model chips, labelled as the reference panel labels them (frame 14). */
 export const MODEL_CHOICES = [
