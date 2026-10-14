@@ -21,6 +21,10 @@ export type World = {
   agents: { id: string; status: string; type?: string; description?: string; parentId?: string; spawnedBy?: string }[]
   /** What `$.session.usage()` answers; a test edits it between calls. */
   usage: { rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[]; cost?: { usd: number } }
+  /** Every `$.agent.spawn` the mod made, whole. */
+  spawnArgs: { prompt: string; description?: string; subagentType?: string; model?: string }[]
+  /** Every `$.process.run` argv the mod made. */
+  runs: string[][]
 }
 
 export type WorldOptions = {
@@ -44,6 +48,8 @@ export type WorldOptions = {
   taskType?: string
   /** What the end-of-turn "which steps did this answer complete" call answers. */
   stepsDone?: string
+  /** What `git diff` prints for the cross-check; `git diff --stat` prints a one-liner. */
+  diff?: string
 }
 
 /**
@@ -65,6 +71,8 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
     commandRuns: [],
     agents: [],
     usage: { rateLimits: [] },
+    spawnArgs: [],
+    runs: [],
   }
   const modelMs = options.modelMs ?? 0
   const plan = options.plan ?? ['Read the code', 'Fix the bug', 'Run the tests']
@@ -110,7 +118,14 @@ export function worldOf(on: On, options: WorldOptions = {}): World {
       },
     }
   })
+  on('process.run', ($, e) => {
+    world.runs.push([...e.argv])
+    const isStat = e.argv.includes('--stat')
+    return { value: { exitCode: 0, stdout: isStat ? ' 1 file changed' : (options.diff ?? ''), stderr: '', isStdoutTruncated: false } as never }
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text, ...(e.context ? { context: e.context } : {}) }))
   on('agent.spawn', ($, e) => {
+    world.spawnArgs.push({ prompt: e.prompt, description: e.description, subagentType: e.subagentType, ...(e.model ? { model: e.model } : {}) })
     world.spawns.push(e.prompt)
     return { model: 'haiku', agentId: 'spike-' + world.spawns.length }
   })

@@ -133,6 +133,34 @@ describe('session', () => {
     expect(starts).toBe(2)
   })
 
+  test('cross-check: a confirmed verdict lands on the card; a refuted one prevents All done; silence is unclear', async () => {
+    for (const [answer, expected] of [
+      ['{"verdict":"confirmed","reason":"reran green","reran":true,"exit":0}', 'confirmed'],
+      ['{"verdict":"refuted","reason":"tests cover only the happy path","reran":false,"exit":null}', 'refuted'],
+    ] as const) {
+      const fake = fakeHostOf()
+      const session = new ReceiptsSession({ spike: false, crossCheck: true, crossCheckModel: 'opus' })
+      await session.turnStart(fake.host, 'cc', 'fix the loader')
+      await session.afterTool(fake.host, { tool: 'Edit', tool_use_id: 'e1' }, { file_path: '/work/src/x.ts' }, { result: {} } as never)
+      await session.afterTool(fake.host, { tool: 'Bash', tool_use_id: 'b1' }, { command: 'bun test' }, { result: { stdout: ' 3 pass\n 0 fail\n', stderr: '' } } as never)
+      await session.turnComplete(fake.host, { turnId: 'cc', answer: 'Done, tests pass.', isAborted: false, reason: 'answer' })
+      await fake.settle()
+      expect(fake.spawned).toHaveLength(1)
+      session.subagentComplete(fake.host, 'spike-1', answer)
+      const card = session.viewModel(fake.now()).finished
+      expect(card?.crossCheck).toMatchObject({ state: expected })
+    }
+
+    const quiet = fakeHostOf()
+    const session = new ReceiptsSession({ spike: false, crossCheck: true, crossCheckModel: 'opus' })
+    await session.turnStart(quiet.host, 'cq', 'fix the loader')
+    await session.afterTool(quiet.host, { tool: 'Edit', tool_use_id: 'e1' }, { file_path: '/work/src/x.ts' }, { result: {} } as never)
+    await session.turnComplete(quiet.host, { turnId: 'cq', answer: 'Done.', isAborted: false, reason: 'answer' })
+    await quiet.settle()
+    await quiet.advance(91_000)
+    expect(session.viewModel(quiet.now()).finished?.crossCheck).toMatchObject({ state: 'unclear' })
+  })
+
   test('a finished task is learned, with its calibration verdict, and the store holds it', async () => {
     const fake = fakeHostOf()
     const session = new ReceiptsSession({ spike: false })
