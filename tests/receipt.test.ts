@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { receiptLine, recordEdit, recordVerify, emptyLedger, exitCodeOf, isVerifyCommand, testCountsOf } from '../src/ledger'
+import { receiptLine, recordEdit, recordVerify, emptyLedger, exitCodeOf, isVerifyCommand, summaryLineOf } from '../src/ledger'
 import { worldOf } from './fixtures'
 
 const PASSING = { result: { stdout: 'bun test v1.2\n\n 152 pass\n 0 fail\n', stderr: '', interrupted: false } }
@@ -18,7 +18,7 @@ describe('receipt on turn.complete', () => {
     await $.tool.call({ tool: 'Bash', command: 'bun test' })
     await world.clock.advance(60_000)
     const out = await $.turn.complete(completeOf('r1', 'Done. All 152 tests pass.'))
-    expect(out.text).toBe('receipt · bun test ✓ 152 pass · 1m ago')
+    expect(out.text).toBe('receipt · bun test · exit 0 · 152 pass, 0 fail · 1m ago')
   })
 
   test('edit, then "done" with no verify: UNVERIFIED', async ($, on) => {
@@ -26,7 +26,7 @@ describe('receipt on turn.complete', () => {
     await $.turn.start({ text: 'fix x', turnId: 'r2' })
     await $.tool.call({ tool: 'Edit', file_path: '/work/src/x.ts', old_string: 'a', new_string: 'b' })
     const out = await $.turn.complete(completeOf('r2', 'Fixed it, all done.'))
-    expect(out.text).toMatch(/^UNVERIFIED · claimed done, no test\/build\/run after the last edit \(src\/x\.ts at \d\d:\d\d\)$/)
+    expect(out.text).toMatch(/^UNVERIFIED · claims done · last edit src\/x\.ts \d\d:\d\d · no verify since$/)
   })
 
   test('no edits: no line', async ($, on) => {
@@ -46,7 +46,7 @@ describe('receipt on turn.complete', () => {
     await world.clock.advance(5_000)
     await $.tool.call({ tool: 'Write', file_path: '/work/src/y.ts', content: 'z' })
     const out = await $.turn.complete(completeOf('r4', 'All done.'))
-    expect(out.text).toMatch(/^UNVERIFIED · claimed done, no test\/build\/run after the last edit \(src\/y\.ts at \d\d:\d\d\)$/)
+    expect(out.text).toMatch(/^UNVERIFIED · claims done · last edit src\/y\.ts \d\d:\d\d · no verify since$/)
   })
 
   test('not claiming done: no line, even with an unverified edit', async ($, on) => {
@@ -66,7 +66,7 @@ describe('receipt on turn.complete', () => {
     await $.tool.call({ tool: 'Bash', command: 'bun test' })
     await world.clock.advance(5_000)
     const out = await $.turn.complete(completeOf('r6', 'Done.'))
-    expect(out.text).toBe('receipt · bun test ✗ exit 1 · 150 pass · 2 fail · 5s ago')
+    expect(out.text).toBe('FAILED · bun test · exit 1 · 150 pass, 2 fail')
   })
 })
 
@@ -80,13 +80,13 @@ describe('ledger', () => {
     }
   })
 
-  test('exit codes and test counts are read from what the tool returned', () => {
+  test('exit codes and summary lines are read from what the tool returned', () => {
     expect(exitCodeOf({ result: {} })).toBe(0)
     expect(exitCodeOf({ result: {}, isError: true, text: 'Exit code 2\nboom' })).toBe(2)
     expect(exitCodeOf({ result: {}, isError: true, text: 'boom' })).toBe(1)
-    expect(testCountsOf('Tests: 3 failed, 40 passed, 43 total')).toEqual({ pass: 40, fail: 3 })
-    expect(testCountsOf('test result: ok. 12 passed; 0 failed')).toEqual({ pass: 12, fail: 0 })
-    expect(testCountsOf('nothing here')).toBeUndefined()
+    expect(summaryLineOf('Tests: 3 failed, 40 passed, 43 total')).toBe('Tests: 3 failed, 40 passed, 43 total')
+    expect(summaryLineOf('test result: ok. 12 passed; 0 failed')).toBe('test result: ok. 12 passed; 0 failed')
+    expect(summaryLineOf('nothing here')).toBeUndefined()
   })
 
   test('the receipt line is pure over the ledger', () => {
@@ -94,7 +94,7 @@ describe('ledger', () => {
     expect(receiptLine(ledger, true, 0, '/work')).toBeNull()
     ledger = recordEdit(ledger, '/work/a.ts', 0)
     ledger = recordVerify(ledger, 'tsc --noEmit', 0, '', 1_000)
-    expect(receiptLine(ledger, true, 4 * 60_000, '/work')).toBe('receipt · tsc --noEmit ✓ · 3m ago')
+    expect(receiptLine(ledger, true, 4 * 60_000, '/work')).toBe('receipt · tsc --noEmit · exit 0 · 3m ago')
     expect(receiptLine(ledger, false, 4 * 60_000, '/work')).toBeNull()
   })
 })
