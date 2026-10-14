@@ -1,6 +1,6 @@
-// The band as the pure view draws it, for fixtures in each state: working,
-// over the range, done (verified), done (unverified), narrow, collapsed, and
-// the settings popover. Plain text, no colour: the border colour and badge
+// The band as the pure view draws it, for fixtures in each state: the six
+// card states, then working with no task list, over the range, checks
+// failed, narrow, collapsed, and the settings popover. Plain text, no colour: the border colour and badge
 // fill are named beside each.
 //
 //   bun scripts/mock-band.ts [columns]
@@ -8,7 +8,7 @@
 import { bandView, framedText, innerWidthOf, toolsView, TOOLS_COLUMNS, type BandOptions } from '../src/band'
 import type { RangeEstimate } from '../src/estimator'
 import type { Milestone, Plan } from '../src/milestones'
-import type { ViewModel } from '../src/view'
+import type { Finished, ViewModel } from '../src/view'
 
 const columns = Number(process.argv[2] ?? 155)
 const STEPS = ['Pick the page style and layout', 'Check how the page gets live weather', 'Build the weather dashboard', 'Publish it and share the link']
@@ -52,13 +52,26 @@ const base: ViewModel = {
   finished: null,
 }
 
-const done = (receipt: string | null): ViewModel => ({
+const VERIFIED = 'receipt · bun test · exit 0 · 105 pass, 0 fail · 1m ago'
+const UNVERIFIED = 'UNVERIFIED · claims done · last edit src/x.ts 14:02 · no verify since'
+
+const ended = (plan: Plan, finished: Partial<Finished>): ViewModel => ({
   ...base,
-  plan: planOf(4),
+  plan,
   estimate: null,
   isWorking: false,
   elapsedMs: 107_000,
-  finished: { totalMs: 107_000, receipt, isAborted: false, waitingAgents: 0 },
+  finished: {
+    totalMs: 107_000,
+    receipt: null,
+    isAborted: false,
+    waitingAgents: 0,
+    ledger: 'none',
+    claimsDone: false,
+    hasWork: true,
+    crossCheck: null,
+    ...finished,
+  },
 })
 
 function show(label: string, model: ViewModel, width = columns, options = OPEN): void {
@@ -67,21 +80,45 @@ function show(label: string, model: ViewModel, width = columns, options = OPEN):
   for (const row of framedText(view.rows, innerWidthOf(width))) console.log(row)
 }
 
-show('working', base)
+// The six card states (SPEC-0.3 section 5)
+show('1. working', base)
+show('2. turn ended, steps left', ended(planOf(2), { ledger: 'unverified' }))
+show(
+  '3. all done',
+  ended(planOf(4), {
+    ledger: 'verified',
+    claimsDone: true,
+    receipt: VERIFIED,
+    crossCheck: { state: 'confirmed', model: 'opus', reason: 'reran green', reran: true, exit: 0, command: 'bun test', ms: 38_000 },
+  }),
+)
+show('4. done, unverified', ended(planOf(4), { ledger: 'unverified', claimsDone: true, receipt: UNVERIFIED, crossCheck: { state: 'running', model: 'opus' } }))
+show(
+  '5. done, refuted',
+  ended(planOf(4), {
+    ledger: 'verified',
+    claimsDone: true,
+    receipt: VERIFIED,
+    crossCheck: { state: 'refuted', model: 'opus', reason: 'tests cover only the happy path', reran: false, exit: null, ms: 20_000 },
+  }),
+)
+show('6. answered', { ...ended({ source: 'answer', items: [{ id: 'answer', label: 'answer the question', state: 'done' }] }, { hasWork: false, totalMs: 25_000 }), title: 'can we invite them by email?' })
+
+// And the rest
+show('working, no task list recorded', { ...base, plan: { source: 'tasks', items: [] }, estimate: { kind: 'indeterminate' }, elapsedMs: 73_000 })
 show('over the range', {
   ...base,
   plan: planOf(2),
   elapsedMs: 12 * 60_000 + 10_000,
   estimate: range({ isOver: true, overByMs: 130_000, progress: 0.62, remainingLowMs: 60_000, remainingHighMs: 4 * 60_000, stepProgress: [1, 1, 0.95, 0] }),
 })
-show('done, verified', done('receipt · bun test ✓ 152 pass · 1m ago'))
-show('turn ended with steps left', { ...done(null), plan: planOf(2) })
-show('done, agents still running', { ...done(null), finished: { totalMs: 107_000, receipt: null, isAborted: false, waitingAgents: 2 } })
-show('done, unverified', done('UNVERIFIED · claimed done, no test/build/run after the last edit (src/x.ts at 14:02)'))
+show(
+  'checks failed',
+  ended(planOf(4), { ledger: 'failed', claimsDone: true, receipt: 'FAILED · cargo test · exit 101 · test result: FAILED. 3 passed; 2 failed; 0 ignored' }),
+)
 show('working, narrow terminal', base, 95)
-show('done, unverified, narrow terminal', done('UNVERIFIED · claimed done, no test/build/run after the last edit (src/x.ts at 14:02)'), 95)
+show('done, unverified, narrow terminal', ended(planOf(4), { ledger: 'unverified', claimsDone: true, receipt: UNVERIFIED }), 95)
 show('collapsed', base, columns, { ...OPEN, collapsed: true })
-show('basis tooltip (b)', base, columns, { ...OPEN, showBasis: true })
 
 const toolsWidth = Math.min(columns, TOOLS_COLUMNS) - 4
 console.log(`\nsettings popover (t) · ${toolsWidth + 4} columns, right-aligned in the band`)
