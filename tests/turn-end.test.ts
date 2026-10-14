@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { bandView, rowText } from '../src/band'
 import type { Milestone, Plan } from '../src/milestones'
 import type { ViewModel } from '../src/view'
-import { BAND_WIDE, linesOf, worldOf } from './fixtures'
+import { bandOf, BAND_WIDE, linesOf, worldOf } from './fixtures'
 
 const STEPS = ['Locate the plugin', 'Compare installed copy', 'Check versions', 'Report status', 'Outline scope']
 
@@ -31,7 +31,7 @@ const OPEN = { collapsed: false, showBasis: false }
 
 async function bandText(ui: { drawn: () => Promise<unknown> }): Promise<{ text: string; border?: string }> {
   const drawn = (await ui.drawn()) as { props: { borderColor?: string } }
-  return { text: linesOf(drawn).join(''), border: drawn.props.borderColor }
+  return { text: linesOf(drawn).join(''), border: bandOf(drawn).props.borderColor }
 }
 
 describe('turn end (pure)', () => {

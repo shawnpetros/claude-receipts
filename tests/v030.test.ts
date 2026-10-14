@@ -14,7 +14,7 @@ import {
 } from '../src/ledger'
 import type { Milestone, Plan } from '../src/milestones'
 import type { Finished, ViewModel } from '../src/view'
-import { BAND, BAND_WIDE, linesOf, worldOf } from './fixtures'
+import { bandOf, BAND, BAND_WIDE, linesOf, worldOf } from './fixtures'
 
 const T = new Date(2026, 9, 14, 14, 2).getTime()
 
@@ -32,7 +32,7 @@ async function bandText($: unknown, wide = true): Promise<{ text: string; border
   const drawn = (await ui.drawn()) as { props: { borderColor?: string } }
   const text = linesOf(drawn).join('')
   await ui.unmount()
-  return { text, border: drawn.props.borderColor }
+  return { text, border: bandOf(drawn).props.borderColor }
 }
 
 describe('plan-first', () => {

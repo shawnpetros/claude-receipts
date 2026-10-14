@@ -1,13 +1,22 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { aliasOf, toolsView } from '../src/band'
-import { BAND_WIDE, linesOf, worldOf } from './fixtures'
+import { aliasOf } from '../src/band'
+import { BAND_WIDE, worldOf } from './fixtures'
+
+// 0.3.0: the settings popover became the tools panel of the reference video
+// (frame 14). Its layout, sections and switches are covered in
+// frames.test.ts. Deleted here, with the popover they encoded: "the pure
+// view: letter-spaced headers..." (the panel's headers are not letter-spaced
+// in frame 14), "t in the band toggles it while a task shows" (the band draws
+// no buttons; the footer button and /receipts tools open it), and "the rows
+// level is three chips" (Clean View is one setting row that steps through
+// the levels).
 
 async function openTools($: { command: { run: (e: never) => Promise<unknown> } }) {
   await $.command.run({ command: 'receipts', args: 'tools' } as never)
 }
 
-describe('settings popover', () => {
+describe('tools panel', () => {
   test('model names map to the aliases the chips use', () => {
     expect(aliasOf('claude-opus-5-5[1m]')).toBe('opus')
     expect(aliasOf('Fable 5.1')).toBe('fable')
@@ -15,44 +24,15 @@ describe('settings popover', () => {
     expect(aliasOf('some-other-model')).toBeUndefined()
   })
 
-  test('the pure view: letter-spaced headers, the current model and effort highlighted, rows fit', () => {
-    const rows = toolsView({ model: 'claude-opus-5-5', effort: 'high', rows: 'quiet', spike: false }, 60)
-    for (const row of rows) expect([...row.segs.map(seg => seg.text).join('')].length).toBeLessThanOrEqual(60)
-    const text = rows.map(row => row.segs.map(seg => seg.text).join(''))
-    expect(text.some(line => line.startsWith('M O D E L'))).toBe(true)
-    expect(text.some(line => line.startsWith('E F F O R T'))).toBe(true)
-    expect(text.some(line => line.startsWith('R O W S'))).toBe(true)
-    expect(text.some(line => /S E T T I N G S/.test(line))).toBe(true)
-    const chips = rows.flatMap(row => row.segs)
-    expect(chips.find(seg => seg.inverse && seg.text.trim() === 'Opus')).toBeDefined()
-    expect(chips.find(seg => seg.inverse && seg.text.trim() === 'High')).toBeDefined()
-    expect(chips.find(seg => seg.inverse && seg.text.trim() === 'Quiet')).toBeDefined()
-    expect(chips.find(seg => seg.button?.key === 'model-sonnet')).toBeDefined()
-    expect(chips.find(seg => seg.button?.key === 'model-opus')).toBeUndefined()
-  })
-
-  test('/receipts tools opens it in the band with the current model highlighted; [-] closes it', async ($, on) => {
+  test('/receipts tools opens it in the band with the current model highlighted, and closes it again', async ($, on) => {
     worldOf(on, { model: 'claude-opus-5-5[1m]' })
     await openTools($ as never)
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
-    const panel = await ui.find({ key: 'tools' })
-    expect(panel).toBeDefined()
-    const current = await ui.findAll({ type: 'Text', text: /Opus/ })
+    expect(await ui.find({ key: 'tools' })).toBeDefined()
+    const current = await ui.findAll({ type: 'Text', text: /Opus 5\.5/ })
     expect(current.some(element => element.props.inverse === true)).toBe(true)
     expect(await ui.find({ key: 'model-haiku' })).toBeDefined()
-    await ui.press({ key: 'tools-close' })
-    expect(await ui.find({ key: 'tools' })).toBeUndefined()
-  })
-
-  test('t in the band toggles it while a task shows', async ($, on) => {
-    worldOf(on)
-    await $.turn.start({ text: 'fix', turnId: 't1' })
-    const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
-    const toggle = await ui.find({ key: 'tools-toggle' })
-    expect(toggle?.props.hotkey).toBe('t')
-    await ui.press({ key: 'tools-toggle' })
-    expect(await ui.find({ key: 'tools' })).toBeDefined()
-    await ui.press({ key: 'tools-toggle' })
+    await openTools($ as never)
     expect(await ui.find({ key: 'tools' })).toBeUndefined()
   })
 
@@ -74,20 +54,38 @@ describe('settings popover', () => {
     expect(world.commandRuns).toEqual(['/model fable', '/effort xhigh'])
   })
 
-  test('the rows level is three chips, quiet by default; the spike is a switch', async ($, on) => {
+  test('Clean View steps through the rows levels; the switches flip', async ($, on) => {
     worldOf(on)
     await openTools($ as never)
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
-    const quiet = await ui.findAll({ type: 'Text', text: /Quiet/ })
-    expect(quiet.some(element => element.props.inverse === true)).toBe(true)
-    expect(await ui.find({ key: 'rows-quiet' })).toBeUndefined()
-    await ui.press({ key: 'rows-clean' })
-    expect(await ui.find({ key: 'rows-quiet' })).toBeDefined()
-    expect(await ui.find({ key: 'rows-clean' })).toBeUndefined()
+    const label = async (key: string) => (await ui.find({ key }))?.props.label
+    expect(await label('set-rows')).toBe('Quiet')
+    await ui.press({ key: 'set-rows' })
+    expect(await label('set-rows')).toBe('Off')
+    await ui.press({ key: 'set-rows' })
+    expect(await label('set-rows')).toBe('Clean')
+    for (const key of ['set-spike', 'set-chatter', 'set-crosscheck']) {
+      const before = await label(key)
+      await ui.press({ key })
+      expect(await label(key), key).not.toBe(before)
+    }
+  })
 
-    const onOff = async (key: string) => (await ui.find({ key }))?.props.label
-    expect(await onOff('set-spike')).toBe('On')
-    await ui.press({ key: 'set-spike' })
-    expect(await onOff('set-spike')).toBe('Off')
+  test('LAUNCH shows the stats and marks the receipt wrong, answered by this mod, not a command run', async ($, on) => {
+    const world = worldOf(on)
+    const toasts: string[] = []
+    on('ui.toast', ($, e) => {
+      toasts.push(e.text)
+      return { value: undefined }
+    })
+    await openTools($ as never)
+    const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
+    await ui.press({ key: 'launch-stats' })
+    await ui.press({ key: 'launch-wrong' })
+    // $.command.run skips the calling plugin's own hooks, so /receipts from
+    // here would go unanswered; the presses must not go through it
+    expect(world.commandRuns).toEqual([])
+    expect(toasts[0]).toMatch(/claims-done false positives/)
+    expect(toasts[1]).toMatch(/no receipt/)
   })
 })

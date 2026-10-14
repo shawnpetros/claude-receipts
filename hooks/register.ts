@@ -4,6 +4,7 @@ import { atom, read, update } from 'claude-code'
 import {
   ACCENT,
   bandView,
+  dividerRow,
   EFFORT_CHOICES,
   MODEL_CHOICES,
   ROWS_LEVELS,
@@ -16,6 +17,7 @@ import {
 import { PLAN_INSTRUCTION } from '../src/crosscheck'
 import type { Host } from '../src/host'
 import { firstLineOf, handbackLineOf, QuietLog } from '../src/quiet'
+import { RECEIPT_LINE_SWITCH, receiptsSwitches, switchesOf } from '../src/switches'
 import { BUILD_TYPES, PANE_ID, PANE_TITLE, ReceiptsSession } from '../src/session'
 import { paneLines, toolGroupText, toolResultText, toolRowText, type Line } from '../src/view'
 
@@ -43,11 +45,24 @@ const rowsLast = atom({ plugin: 'receipts', key: 'rowsLast' }, 'quiet')
  */
 const working = atom({ plugin: 'receipts', key: 'working' }, false)
 
-/** The band folded to its title row by its own `[▾]` (`[▸]` folded). */
-const collapsed = atom({ plugin: 'receipts', key: 'collapsed' }, false)
-
-/** The settings popover, drawn in the band. */
+/**
+ * The tools panel, drawn in the band at its right (frames 13 and 14 show it
+ * there: the band's own [-] beside it, its "n more" row under it), opened by
+ * the footer button.
+ */
 const toolsOpen = atom({ plugin: 'receipts', key: 'toolsOpen' }, false)
+
+/** Quiet folds subagent hand-backs and peer messages while this is on. */
+const chatter = atom({ plugin: 'receipts', key: 'chatter' }, true)
+
+/** The receipt line under an answer that claims done; receipts' own MODS switch. */
+const receiptLine = atom({ plugin: 'receipts', key: 'receiptLine' }, true)
+
+/** Receipts' switches as published for any panel to read (switches.ts). */
+const switches = atom({ plugin: 'receipts', key: 'switches' }, receiptsSwitches(true))
+
+/** Presses on other mods' switches: `{ [id]: value }`, for each owner to apply. */
+const switchRequests = atom({ plugin: 'receipts', key: 'switchRequests' }, {} as Record<string, boolean>)
 
 /**
  * The spike switch as the person last set it. userConfig is read-only at
@@ -141,6 +156,24 @@ async function applyDefaults($: EngineInterface, session: ReceiptsSession, isCle
   session.setSpike(isSpike)
 }
 
+/** Receipts' own switch flipped: the atom, and the list it publishes. */
+async function setReceiptLine($: EngineInterface, isOn: boolean): Promise<void> {
+  await update($, receiptLine, () => isOn)
+  await update($, switches, () => receiptsSwitches(isOn))
+}
+
+/**
+ * Every known mod's published switches. `plugin` must be a literal, so each
+ * mod the panel knows is named here; one not loaded reads as nothing.
+ */
+async function modSwitchesOf($: EngineInterface): Promise<ReturnType<typeof switchesOf>> {
+  const buddy = await $.state.get({ plugin: 'buddy', key: 'switches' }).catch(() => ({ value: undefined }))
+  return switchesOf([
+    ['receipts', receiptsSwitches(await read($, receiptLine))],
+    ['buddy', buddy.value],
+  ])
+}
+
 async function sessionModelOf($: EngineInterface): Promise<string> {
   return $.session.model().catch(() => '')
 }
@@ -216,6 +249,8 @@ export function register(on: On, options: PluginOptions): void {
     await session.start(hostOf($))
     const stored = await $.state.get({ plugin: 'receipts', key: 'rows' })
     if (stored.version === 0) await applyDefaults($, session, isCleanByDefault, isSpikeByDefault)
+    // Publish receipts' switches for any tools panel (switches.ts)
+    await update($, switches, () => receiptsSwitches(true))
     try {
       await $.command.register({
         name: 'receipts',
@@ -284,7 +319,7 @@ export function register(on: On, options: PluginOptions): void {
     await update($, working, () => false)
     // The final answer, drawn as one dim line while it streamed, in full now
     if (quiet.finish(e.answer)) $.ui.invalidate('ui.render')
-    if (!line) return result
+    if (!line || !(await read($, receiptLine))) return result
     const isOwnText = result.text !== '' && result.text !== e.answer
     return { ...result, text: isOwnText ? `${result.text}\n${line}` : line }
   })
@@ -293,7 +328,7 @@ export function register(on: On, options: PluginOptions): void {
     const arg = e.args.trim()
     if (arg === 'stats') return { text: session.statsText() }
     if (arg === 'tools') {
-      await update($, toolsOpen, () => true)
+      await update($, toolsOpen, value => !value)
       return {}
     }
     if (arg === 'basis') {
@@ -391,32 +426,42 @@ export function register(on: On, options: PluginOptions): void {
   })
 
   // The band: the primary surface. Progress while working, the completion
-  // card after, the settings popover under it when asked
+  // card after, the tools panel at its right when open, and the Clean View
+  // rule under it while the rows level is not off (frames 10, 18, 26)
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
+    const level = await levelOf($)
     const isToolsOpen = await read($, toolsOpen)
     const isBandShown = session.isBandWanted()
-    if (!isBandShown && !isToolsOpen) return next(e)
+    if (!isBandShown && !isToolsOpen && level === 'off') return next(e)
     await read($, tick)
-    const isCollapsed = await read($, collapsed)
     const now = await $.clock.now()
     session.ensureTicking(hostOf($), now)
     const el = $.ui.resolve(e)
+    const mods = isToolsOpen ? await modSwitchesOf($) : []
     const presses: Presses = {
-      collapse: () => update($, collapsed, value => !value),
-      basis: () => {
-        session.toggleBasis()
+      'set-rows': () => setRows($, ROWS_LEVELS[(ROWS_LEVELS.indexOf(level) + 1) % ROWS_LEVELS.length]!),
+      'set-crosscheck': () => {
+        session.setCrossCheck(!session.isCrossCheckOn)
         $.ui.invalidate('ui.render')
       },
-      'tools-toggle': () => update($, toolsOpen, value => !value),
-      'tools-close': () => update($, toolsOpen, () => false),
       'set-spike': () =>
         update($, spike, value => {
           session.setSpike(!value)
           return !value
         }),
+      'set-chatter': () => update($, chatter, value => !value),
+      // Not $.command.run: it skips the calling plugin's own hooks, so this
+      // mod's /receipts would go unanswered. The session answers, as a toast
+      'launch-stats': () => $.ui.toast(session.statsText(), { timeoutMs: 15_000 }),
+      'launch-wrong': async () => $.ui.toast(await session.markWrong(hostOf($)), { timeoutMs: 8_000 }),
     }
-    for (const level of ROWS_LEVELS) presses[`rows-${level}`] = () => setRows($, level)
+    for (const entry of mods) {
+      presses[`mod-${entry.id}`] =
+        entry.mod === 'receipts' && entry.id === RECEIPT_LINE_SWITCH
+          ? () => setReceiptLine($, !entry.value)
+          : () => update($, switchRequests, requests => ({ ...requests, [entry.id]: !entry.value }))
+    }
     for (const choice of MODEL_CHOICES) {
       presses[`model-${choice.value}`] = async () => {
         await choose($, 'model', choice.value)
@@ -432,44 +477,74 @@ export function register(on: On, options: PluginOptions): void {
     }
 
     const columns = e.props.bodyColumns
-    let band: RenderElement | null = null
+    const children: RenderElement[] = []
     if (isBandShown) {
-      const view = bandView(session.viewModel(now), columns, { collapsed: isCollapsed, showBasis: session.isBasisShown })
-      band = el.Box({
-        key: 'band',
+      const view = bandView(session.viewModel(now), columns, { collapsed: false, showBasis: session.isBasisShown })
+      children.push(
+        el.Box({
+          key: 'band',
+          flexDirection: 'column',
+          borderStyle: 'round',
+          borderColor: view.border,
+          paddingX: 1,
+          width: columns,
+          children: view.rows.map(row => rowOf(el, row, presses)),
+        }),
+      )
+    }
+    if (isToolsOpen) {
+      const toolsWidth = Math.min(columns, TOOLS_COLUMNS)
+      const rows = toolsView(
+        {
+          model: await sessionModelOf($),
+          ...(session.effortLevel ? { effort: session.effortLevel } : {}),
+          rows: level,
+          crossCheck: session.isCrossCheckOn,
+          spike: await read($, spike),
+          chatter: await read($, chatter),
+          mods,
+        },
+        toolsWidth - 4,
+      )
+      const tools = el.Box({
+        key: 'tools',
         flexDirection: 'column',
         borderStyle: 'round',
-        borderColor: view.border,
+        borderColor: ACCENT,
         paddingX: 1,
-        width: columns,
-        children: view.rows.map(row => rowOf(el, row, presses)),
+        width: toolsWidth,
+        children: rows.map(row => rowOf(el, row, presses)),
       })
+      children.push(el.Box({ flexDirection: 'row', justifyContent: 'flex-end', width: columns, children: [tools] }))
     }
-    if (!isToolsOpen && band) return band
+    if (level !== 'off') children.push(rowOf(el, dividerRow(columns, 'Clean View'), presses))
+    return el.Box({ flexDirection: 'column', width: columns, children })
+  })
 
-    const toolsWidth = Math.min(columns, TOOLS_COLUMNS)
-    const rows = toolsView(
-      {
-        model: await sessionModelOf($),
-        ...(session.effortLevel ? { effort: session.effortLevel } : {}),
-        rows: await levelOf($),
-        spike: await read($, spike),
-      },
-      toolsWidth - 4,
-    )
-    const tools = el.Box({
-      key: 'tools',
-      flexDirection: 'column',
-      borderStyle: 'round',
-      borderColor: ACCENT,
-      paddingX: 1,
-      width: toolsWidth,
-      children: rows.map(row => rowOf(el, row, presses)),
-    })
-    return el.Box({
-      flexDirection: 'column',
-      width: columns,
-      children: [...(band ? [band] : []), el.Box({ flexDirection: 'row', justifyContent: 'flex-end', children: [tools] })],
+  // The footer button that opens and closes the tools panel, beside the
+  // engine's mode labels at the right of the prompt footer (frames 10, 13)
+  on('ui.render', { component: 'SessionMode' }, async ($, e) => {
+    const isOpen = await read($, toolsOpen)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const modes = e.props.modes
+    return Box({
+      flexDirection: 'row',
+      columnGap: 2,
+      children: [
+        ...(modes.length > 0 ? [Text({ dimColor: true, children: [modes.join(' & ')] })] : []),
+        Box({
+          key: 'tools-footer-box',
+          ...(isOpen ? { backgroundColor: ACCENT } : {}),
+          children: [
+            Button({
+              key: 'tools-footer',
+              label: isOpen ? "◆ Shawn's Tools ▼" : "◆ Shawn's Tools ▲",
+              plain: true,
+              onPress: () => update($, toolsOpen, value => !value),
+            }),
+          ],
+        }),
+      ],
     })
   })
 
@@ -550,7 +625,7 @@ export function register(on: On, options: PluginOptions): void {
   // ctrl+o expanded row are never touched
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (e.props.isExpanded || e.props.origin.kind === 'composer') return next(e)
-    if ((await levelOf($)) !== 'quiet') return next(e)
+    if ((await levelOf($)) !== 'quiet' || !(await read($, chatter))) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     if (await read($, working)) return Box({})
     return Text({ dimColor: true, wrap: 'truncate-end', children: [handbackLineOf(e.props.text, e.props.from?.name)] })

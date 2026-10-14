@@ -15,6 +15,7 @@ import type { Color } from 'claude-code'
 import { crossCheckRowOf, type CrossCheck } from './crosscheck'
 import { basisLines, durationOf, estimateRow, type Estimate } from './estimator'
 import type { Milestone, Plan } from './milestones'
+import type { Switch } from './switches'
 import { truncate, type ViewModel } from './view'
 
 export const ACCENT: Color = 'claude'
@@ -31,9 +32,12 @@ export const OVER: Color = 'inactive'
 export const NARROW_BODY = 105
 /** The round border and one cell of padding each side. */
 export const FRAME = 4
-export const MINI_BAR = 12
+export const MINI_BAR = 16
+/** The step labels' column, as a share of the band's width (frames 20, 26). */
+const LABEL_SHARE = 0.3
+/** The ask in the title row is cut here, room or not (frame 18). */
+export const TITLE_MAX = 39
 export const MAX_STEP_ROWS = 6
-const MIN_BAR = 8
 const MIN_TAIL = 12
 
 export type SegButton = {
@@ -175,24 +179,33 @@ function stepCounterOf(plan: Plan): string {
   return `Step ${i} of ${n}` + (plan.source === 'answer' ? ' · answer' : '')
 }
 
-function titleRow(model: ViewModel, width: number, options: BandOptions, tone: BandTone): Row {
-  const title = model.title.replace(/\s+/g, ' ').trim() || 'continuing'
-  const buttons = [buttonSeg('basis', 'basis', 'b'), space(2), buttonSeg('tools-toggle', 'tools', 't'), space(2)]
-  // Not [-]: Claude Code draws its own [-] beside the band, which hides it
-  // whole; this one folds to the title row
-  const collapse = buttonSeg('collapse', options.collapsed ? '[▸]' : '[▾]', undefined, false)
+/**
+ * The ask as the title row shows it: one line, cut at TITLE_MAX with an
+ * ellipsis even when there is room, as the reference band does (frame 18).
+ */
+function askOf(title: string): string {
+  return truncate(title.replace(/\s+/g, ' ').trim() || 'continuing', TITLE_MAX)
+}
+
+function titleRow(model: ViewModel, width: number, tone: BandTone): Row {
+  const title = askOf(model.title)
   if (tone === 'working' || tone === 'over') {
-    const left: Seg[] = [{ text: '✶ ', color: ACCENT, bold: true }, { text: title, bold: true, grow: true }]
-    return { key: 'title', segs: line(width, left, [...buttons, { text: durationOf(model.elapsedMs) }, space(1), collapse]) }
+    // The estimate keeps its place here, dim and with its basis (honesty
+    // contract), where the reference band leaves the row empty
+    const est = model.estimate ? estimateRow(model.estimate) : ''
+    const left: Seg[] = [{ text: '✶ ', color: ACCENT, bold: true }, { text: title, color: ACCENT, bold: true }]
+    const right: Seg[] = [...(est ? [{ text: est, dim: true, grow: true }, space(2)] : []), { text: durationOf(model.elapsedMs) }]
+    return { key: 'title', segs: lineRight(width, left, right) }
   }
   const finished = model.finished
   const totalMs = finished?.totalMs ?? model.elapsedMs
   const waiting = finished?.waitingAgents ?? 0
-  const tail: Seg[] = waiting > 0 ? [{ text: `waiting on ${waiting} ${waiting === 1 ? 'agent' : 'agents'}`, color: WARN }, space(2)] : []
-  const right: Seg[] = [...tail, ...buttons, { text: `took ${durationOf(totalMs)}` }, space(1), collapse]
+  const tail: Seg[] = waiting > 0 ? [{ text: `waiting on ${waiting} ${waiting === 1 ? 'agent' : 'agents'}`, color: WARN }] : []
+  const took: Seg[] = [...(tail.length ? [...tail, space(2)] : []), { text: `took ${durationOf(totalMs)}` }]
   const badgeOf = (text: string, color: Color): Seg => ({ text: ` ${text} `, color, inverse: true, bold: true })
   let badge: Seg
   let text: Seg = { text: title, grow: true }
+  let right = took
   switch (tone) {
     case 'stopped':
       badge = badgeOf('■ Stopped', OVER)
@@ -215,10 +228,11 @@ function titleRow(model: ViewModel, width: number, options: BandOptions, tone: B
       break
     }
     case 'answered':
-      // An answer, not a job: the badge carries the time, the right side drops it
+      // An answer, not a job: the badge carries the time
       badge = badgeOf(`✓ Answered · ${durationOf(totalMs)}`, DONE)
       text = { text: title, color: DONE, grow: true }
-      return { key: 'title', segs: line(width, [badge, space(1), text], [...tail, ...buttons, collapse]) }
+      right = tail
+      break
     default:
       badge = badgeOf('✓ All done', DONE)
       text = { text: title, color: DONE, grow: true }
@@ -226,61 +240,63 @@ function titleRow(model: ViewModel, width: number, options: BandOptions, tone: B
   return { key: 'title', segs: line(width, [badge, space(1), text], right) }
 }
 
+/**
+ * A row whose right side may give way: `right`'s grow segment shrinks first,
+ * so the elapsed time at the end is never cut.
+ */
+function lineRight(width: number, left: readonly Seg[], right: readonly Seg[]): Seg[] {
+  const room = width - widthOf(left) - 2
+  let segs = [...right]
+  const over = widthOf(segs) - room
+  if (over > 0) {
+    const i = segs.findIndex(seg => seg.grow)
+    if (i !== -1) {
+      const keep = Math.max(0, [...segs[i]!.text].length - over)
+      segs = keep < MIN_TAIL ? segs.filter((_, j) => j !== i && j !== i + 1) : segs.map((seg, j) => (j === i ? { ...seg, text: truncate(seg.text, keep) } : seg))
+    }
+  }
+  return line(width, left, segs)
+}
+
+/** A bar of cells, filled then empty, as the reference band draws its bars. */
+function cellsOf(progress: number, width: number, color: Color): Seg[] {
+  return barSegs(progress, width, color, false, '█', '░')
+}
+
 function summaryRow(model: ViewModel, width: number, tone: BandTone): Row {
   const plan = model.plan
-  if (!model.isWorking) {
-    if (!hasSteps(plan)) {
-      return { key: 'summary', segs: line(width, [{ text: 'no steps recorded (Claude made no task list)', dim: true }], [], 0) }
-    }
-    const { done, total: n } = reachedOf(plan)
-    const label = `${done} of ${n} ${n === 1 ? 'step' : 'steps'}` + (plan.source === 'answer' ? ' · answer' : '')
-    const progress = done / n
-    const percent = `${Math.round(progress * 100)}%`.padStart(4)
-    const color = tone === 'done' || tone === 'answered' ? DONE : tone === 'stopped' || tone === 'ended' ? OVER : WARN
+  const barRow = (label: string, progress: number, color: Color, percentSeg: (text: string) => Seg): Row => {
+    const percent = `${Math.round(progress * 100)}%`
     const barWidth = Math.max(1, width - [...label].length - 2 - percent.length)
-    return {
-      key: 'summary',
-      segs: line(width, [{ text: label }, space(1), ...barSegs(progress, barWidth, color), space(1), { text: percent, color, bold: true }], [], 0),
-    }
+    return { key: 'summary', segs: line(width, [{ text: label }, space(1), ...cellsOf(progress, barWidth, color), space(1), percentSeg(percent)], [], 0) }
+  }
+  if (!model.isWorking) {
+    if (!hasSteps(plan)) return { key: 'summary', segs: line(width, [{ text: 'no steps recorded (Claude made no task list)', dim: true }], [], 0) }
+    const { done, total } = reachedOf(plan)
+    const label = `${done} of ${total} ${total === 1 ? 'step' : 'steps'}` + (plan.source === 'answer' ? ' · answer' : '')
+    const color = tone === 'done' || tone === 'answered' ? DONE : tone === 'stopped' || tone === 'ended' ? OVER : WARN
+    return barRow(label, done / total, color, text => ({ text, color, bold: true }))
+  }
+  if (!hasSteps(plan)) {
+    // No task list: no steps and no percent, only the clock
+    return { key: 'summary', segs: line(width, [{ text: `working · ${durationOf(model.elapsedMs)}`, color: ACCENT }], [], 0) }
   }
   const est: Estimate = model.estimate ?? { kind: 'indeterminate' }
   const isOver = est.kind === 'range' && est.isOver
-  if (!hasSteps(plan)) {
-    // No task list: no steps, no percent. Only what is known: the clock and the estimate
-    const tail = estimateRow(est)
-    return {
-      key: 'summary',
-      segs: line(width, [{ text: `working · ${durationOf(model.elapsedMs)}`, color: ACCENT }, space(2), { text: tail, dim: true, grow: true }], [], 0),
-    }
-  }
   const progress = est.kind === 'range' ? est.progress : 0
-  const label = stepCounterOf(plan)
-  const percent = `${Math.round(progress * 100)}%`.padStart(4)
-  let tail = estimateRow(est)
-  const fixed = [...label].length + 1 + 1 + percent.length
-  let barWidth = width - fixed - 2 - [...tail].length
-  if (barWidth < MIN_BAR) {
-    const tailRoom = width - fixed - 2 - MIN_BAR
-    tail = tailRoom >= MIN_TAIL ? truncate(tail, tailRoom) : ''
-    barWidth = width - fixed - (tail ? 2 + [...tail].length : 0)
-  }
-  const barColor = isOver ? OVER : ACCENT
-  const segs: Seg[] = [
-    { text: label },
-    space(1),
-    ...barSegs(progress, Math.max(1, barWidth), barColor),
-    space(1),
-    isOver ? { text: percent, dim: true } : { text: percent, color: ACCENT, bold: true },
-    ...(tail ? [space(2), { text: tail, dim: true }] : []),
-  ]
-  return { key: 'summary', segs: line(width, segs, [], 0) }
+  return barRow(stepCounterOf(plan), progress, isOver ? OVER : ACCENT, text => (isOver ? { text, dim: true } : { text, color: ACCENT, bold: true }))
 }
 
-function stateWordOf(item: Milestone, index: number, firstPending: number, isWorking: boolean): Seg {
+/**
+ * The word after a step's bar, as the reference draws them: Done; the step
+ * under way's own percent once it has any, else Working; Next for the step
+ * after it, Up next for the rest.
+ */
+function stateWordOf(item: Milestone, index: number, firstPending: number, isWorking: boolean, progress: number): Seg {
   if (item.state === 'done') return { text: 'Done', ...(isWorking ? { dim: true } : {}) }
   if (!isWorking) return { text: 'Not reached', dim: true }
-  if (item.state === 'current') return { text: 'Working', color: ACCENT, bold: true }
-  return { text: index === firstPending ? 'Next' : 'Later', dim: true }
+  if (item.state === 'current') return { text: progress > 0 ? `${Math.round(progress * 100)}%` : 'Working', color: ACCENT, bold: true }
+  return { text: index === firstPending ? 'Next' : 'Up next', dim: true }
 }
 
 function stepRows(model: ViewModel, width: number, tone: BandTone): Row[] {
@@ -292,11 +308,12 @@ function stepRows(model: ViewModel, width: number, tone: BandTone): Row[] {
   const start = items.length <= MAX_STEP_ROWS ? 0 : Math.max(0, Math.min(current - 1, items.length - MAX_STEP_ROWS))
   const shown = items.slice(start, start + MAX_STEP_ROWS)
   const isWide = width + FRAME >= NARROW_BODY
-  const longest = Math.max(...shown.map(item => [...item.label].length))
   const wordWidth = 'Not reached'.length
+  // The bars sit in one column, a fixed share of the width, whatever the
+  // labels' lengths (frames 20 and 26); a longer label is cut
   const labelWidth = isWide
-    ? Math.max(8, Math.min(longest, Math.floor(width * 0.4), width - 2 - 2 - MINI_BAR - 2 - wordWidth))
-    : Math.max(4, Math.min(longest, width - 2 - 2 - wordWidth))
+    ? Math.max(8, Math.min(Math.floor(width * LABEL_SHARE), width - 2 - 2 - MINI_BAR - 2 - wordWidth))
+    : Math.max(4, Math.min(Math.max(...shown.map(item => [...item.label].length)), width - 2 - 2 - wordWidth))
   const stepProgress = model.estimate?.kind === 'range' ? model.estimate.stepProgress : []
 
   const rows = shown.map((item, offset): Row => {
@@ -310,16 +327,17 @@ function stepRows(model: ViewModel, width: number, tone: BandTone): Row[] {
     const label = truncate(item.label, labelWidth).padEnd(labelWidth)
     const labelSeg: Seg =
       item.state === 'current' && model.isWorking ? { text: label, bold: true } : item.state === 'pending' ? { text: label, dim: true } : { text: label }
-    const word = stateWordOf(item, i, firstPending, model.isWorking)
+    const progress = item.state === 'current' ? (stepProgress[i] ?? 0) : 0
+    const word = stateWordOf(item, i, firstPending, model.isWorking, progress)
     let bar: Seg[] = []
     if (isWide) {
       const doneColor = tone === 'working' || tone === 'over' || tone === 'done' || tone === 'answered' ? DONE : OVER
       bar =
         item.state === 'done'
-          ? barSegs(1, MINI_BAR, doneColor, false, '█', '░')
+          ? cellsOf(1, MINI_BAR, doneColor)
           : item.state === 'current' && model.isWorking
-            ? barSegs(stepProgress[i] ?? 0, MINI_BAR, tone === 'over' ? OVER : ACCENT, false, '█', '░')
-            : barSegs(0, MINI_BAR, OVER, false, '█', '░')
+            ? cellsOf(progress, MINI_BAR, tone === 'over' ? OVER : ACCENT)
+            : cellsOf(0, MINI_BAR, OVER)
       bar = [...bar, space(2)]
     }
     return { key: `step-${i}`, segs: line(width, [glyph, space(1), labelSeg, space(2), ...bar, word], [], 0) }
@@ -328,6 +346,15 @@ function stepRows(model: ViewModel, width: number, tone: BandTone): Row[] {
     rows.push({ key: 'more', segs: line(width, [{ text: `+${items.length - MAX_STEP_ROWS} more`, dim: true }], [], 0) })
   }
   return rows
+}
+
+/**
+ * The rule the reference draws just above the prompt with the view's name at
+ * its right end: `──────── Clean View ─`, the band's full width.
+ */
+export function dividerRow(columns: number, label: string): Row {
+  const tail = ` ${label} ─`
+  return { key: 'divider', segs: [{ text: '─'.repeat(Math.max(0, columns - [...tail].length)), dim: true }, { text: tail, dim: true }] }
 }
 
 /**
@@ -386,7 +413,7 @@ function crossCheckRow(check: CrossCheck, width: number): Row {
 export function bandView(model: ViewModel, columns: number, options: BandOptions): BandView {
   const width = innerWidthOf(columns)
   const tone = toneOf(model)
-  const rows: Row[] = [titleRow(model, width, options, tone)]
+  const rows: Row[] = [titleRow(model, width, tone)]
   if (!options.collapsed) {
     rows.push(summaryRow(model, width, tone), ...stepRows(model, width, tone))
     const finished = model.isWorking ? null : model.finished
@@ -405,11 +432,12 @@ export function bandView(model: ViewModel, columns: number, options: BandOptions
 
 // ---- the settings popover ---------------------------------------------------
 
+/** The model chips, labelled as the reference panel labels them (frame 14). */
 export const MODEL_CHOICES = [
-  { value: 'haiku', label: 'Haiku' },
-  { value: 'sonnet', label: 'Sonnet' },
-  { value: 'opus', label: 'Opus' },
-  { value: 'fable', label: 'Fable' },
+  { value: 'haiku', label: 'Haiku 4.5' },
+  { value: 'sonnet', label: 'Sonnet 5' },
+  { value: 'opus', label: 'Opus 5.5' },
+  { value: 'fable', label: 'Fable 5.1' },
 ] as const
 
 export const EFFORT_CHOICES = [
@@ -420,8 +448,8 @@ export const EFFORT_CHOICES = [
   { value: 'max', label: 'Max' },
 ] as const
 
-/** The popover's widest, border and padding included. */
-export const TOOLS_COLUMNS = 64
+/** The panel's widest, border and padding included (frame 14: about 67 columns). */
+export const TOOLS_COLUMNS = 67
 
 /**
  * How much of the transcript the mod draws away. `off`: every row as Claude
@@ -431,12 +459,7 @@ export const TOOLS_COLUMNS = 64
  */
 export type RowsLevel = 'off' | 'clean' | 'quiet'
 export const ROWS_LEVELS: readonly RowsLevel[] = ['off', 'clean', 'quiet']
-
-export const ROWS_CHOICES = [
-  { value: 'off', label: 'Off' },
-  { value: 'clean', label: 'Clean' },
-  { value: 'quiet', label: 'Quiet' },
-] as const
+const ROWS_LABEL: Record<RowsLevel, string> = { off: 'Off', clean: 'Clean', quiet: 'Quiet' }
 
 export type ToolsModel = {
   /** What `$.session.model()` answered. */
@@ -444,7 +467,12 @@ export type ToolsModel = {
   /** The effort level last seen on a model request, if any. */
   effort?: string
   rows: RowsLevel
+  crossCheck: boolean
   spike: boolean
+  /** Fold subagent hand-backs and peer messages at the quiet level. */
+  chatter: boolean
+  /** Every mod's published switches, receipts first. */
+  mods: readonly Switch[]
 }
 
 /**
@@ -459,55 +487,86 @@ function spaced(text: string): string {
   return [...text.toUpperCase()].join(' ')
 }
 
-function chipRow(key: string, header: string, choices: readonly { value: string; label: string }[], current: string | undefined, width: number): Row {
-  const segs: Seg[] = [{ text: spaced(header).padEnd(13), dim: true }]
+function chipRow(key: string, header: string, choices: readonly { value: string; label: string }[], current: string | undefined, color: Color, width: number): Row {
+  const segs: Seg[] = [{ text: header.padEnd(10), dim: true }]
   choices.forEach((choice, i) => {
-    if (i > 0) segs.push(space(1))
-    if (choice.value === current) segs.push({ text: ` ${choice.label} `, color: ACCENT, inverse: true, bold: true })
-    else segs.push(space(1), buttonSeg(`${key}-${choice.value}`, choice.label, undefined, false), space(1))
+    if (i > 0) segs.push(space(2))
+    if (choice.value === current) segs.push({ text: ` ${choice.label} `, color, inverse: true, bold: true })
+    else segs.push(buttonSeg(`${key}-${choice.value}`, choice.label, undefined, false))
   })
   return { key, segs: line(width, segs, [], 0) }
 }
 
-function settingRow(key: string, name: string, help: string, isOn: boolean, width: number): Row {
-  const left: Seg[] = [
-    isOn ? { text: '●', color: DONE } : { text: '○', dim: true },
-    space(1),
-    { text: name.padEnd(19), bold: true },
-    { text: help, dim: true, grow: true },
-  ]
-  return { key: `${key}-row`, segs: line(width, left, [buttonSeg(key, isOn ? 'On' : 'Off', undefined, !isOn)]) }
+/** A dot, a name, a dim description, and the toggle at the right end. */
+function settingRow(key: string, rowKey: string, name: string, help: string, isOn: boolean, toggle: string, width: number): Row {
+  const left: Seg[] = [isOn ? { text: '●', color: DONE } : { text: '○', dim: true }, space(1), { text: name, bold: true }, space(2), { text: help, dim: true, grow: true }]
+  return { key: rowKey, segs: line(width, left, [buttonSeg(key, toggle, undefined, !isOn)]) }
 }
 
-function ruleOf(prefix: string, width: number): Seg[] {
-  const head = truncate(prefix, width)
-  return [{ text: head, dim: true }, { text: '─'.repeat(Math.max(0, width - [...head].length)), dim: true }]
+function ruleOf(title: string, width: number): Row {
+  const head = `──  ${spaced(title)}  `
+  return { key: `rule-${title}`, segs: [{ text: truncate(head, width), dim: true }, { text: '─'.repeat(Math.max(0, width - [...head].length)), dim: true }] }
+}
+
+function blank(key: string, width: number): Row {
+  return { key, segs: [space(width)] }
 }
 
 /**
- * The settings popover: model and effort chips (the current one inverted and
- * not pressable), letter-spaced headers, and the mod's three switches.
- * `width` is the popover's inner width.
+ * The tools panel, laid out as the reference panel (frame 14): a
+ * letter-spaced title with the model and effort at the right, MODEL and
+ * EFFORT chips with the current one highlighted and not pressable, SETTINGS
+ * rows, the MODS switches other mods publish, and LAUNCH actions.
+ * `width` is the panel's inner width.
  */
 export function toolsView(model: ToolsModel, width: number): Row[] {
   const alias = aliasOf(model.model)
+  const modelLabel = MODEL_CHOICES.find(choice => choice.value === alias)?.label ?? (model.model || 'model unknown')
   const effort = model.effort?.toLowerCase()
-  const status = [model.model || 'model unknown', effort ? (EFFORT_CHOICES.find(c => c.value === effort)?.label ?? effort) : null].filter(Boolean).join(' · ')
-  return [
+  const effortLabel = effort ? (EFFORT_CHOICES.find(choice => choice.value === effort)?.label ?? effort) : null
+  const status = [modelLabel, effortLabel].filter(Boolean).join(' · ')
+  const onOff = (isOn: boolean) => (isOn ? 'On' : 'Off')
+  const rows: Row[] = [
     {
       key: 'tools-head',
+      segs: lineRight(width, [{ text: '◆ ', color: ACCENT }, { text: `${spaced("Shawn's")}   ${spaced('tools')}`, color: ACCENT, bold: true }], [{ text: status, dim: true, grow: true }]),
+    },
+    blank('tools-gap-1', width),
+    chipRow('model', 'MODEL', MODEL_CHOICES, alias, ACCENT, width),
+    chipRow('effort', 'EFFORT', EFFORT_CHOICES, effort, 'autoAccept', width),
+    blank('tools-gap-2', width),
+    ruleOf('settings', width),
+    blank('tools-gap-3', width),
+    settingRow('set-rows', 'set-rows-row', 'Clean View', 'simple checklist', model.rows !== 'off', ROWS_LABEL[model.rows], width),
+    settingRow('set-crosscheck', 'set-crosscheck-row', 'Receipts cross-check', 'a second agent re-checks done', model.crossCheck, onOff(model.crossCheck), width),
+    settingRow('set-spike', 'set-spike-row', 'Spike', 'sizing agent for new tasks', model.spike, onOff(model.spike), width),
+    settingRow('set-chatter', 'set-chatter-row', 'Suppress agent chatter', 'fold subagent hand-backs', model.chatter, onOff(model.chatter), width),
+    blank('tools-gap-4', width),
+    ruleOf('mods', width),
+    blank('tools-gap-5', width),
+    ...(model.mods.length > 0
+      ? model.mods.map(entry => settingRow(`mod-${entry.id}`, `mod-${entry.id}-row`, entry.label, entry.description, entry.value, onOff(entry.value), width))
+      : [{ key: 'mods-none', segs: line(width, [{ text: 'no switches registered', dim: true }], [], 0) }]),
+    blank('tools-gap-6', width),
+    ruleOf('launch', width),
+    blank('tools-gap-7', width),
+    {
+      key: 'launch',
       segs: line(
         width,
-        [{ text: '◆ ', color: ACCENT }, { text: spaced('receipts'), color: ACCENT, bold: true }],
-        [{ text: truncate(status, Math.max(4, width - 26)), dim: true }, space(1), buttonSeg('tools-close', '[-]', undefined, false)],
+        [
+          { text: '✦ ', color: ACCENT },
+          buttonSeg('launch-stats', 'Receipts stats', undefined, false),
+          space(6),
+          { text: '◆ ', color: 'autoAccept' },
+          buttonSeg('launch-wrong', 'Mark receipt wrong', undefined, false),
+        ],
+        [],
+        0,
       ),
     },
-    chipRow('model', 'model', MODEL_CHOICES, alias, width),
-    chipRow('effort', 'effort', EFFORT_CHOICES, effort, width),
-    chipRow('rows', 'rows', ROWS_CHOICES, model.rows, width),
-    { key: 'tools-rule', segs: ruleOf(`── ${spaced('settings')} `, width) },
-    settingRow('set-spike', 'Spike', 'sizing subagent, new tasks', model.spike, width),
   ]
+  return rows
 }
 
 /**

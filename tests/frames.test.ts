@@ -134,8 +134,8 @@ describe('the tools panel', () => {
     const rows = toolsView(PANEL, 63).map(rowText)
     expect(rows[0]).toMatch(/^◆ S H A W N ' S {3}T O O L S +Opus 5\.5 · High$/)
     const model = rows.find(row => row.startsWith('MODEL'))!
-    expect(model).toMatch(/^MODEL {5}Haiku 4\.5 {2}Sonnet 5 {2} Opus 5\.5 {2}Fable 5\.1/)
-    expect(rows.find(row => row.startsWith('EFFORT'))).toMatch(/^EFFORT {4}Low {2}Medium {2} High {2}XHigh {2}Max/)
+    expect(model).toMatch(/^MODEL {5}Haiku 4\.5 {2}Sonnet 5 {2} Opus 5\.5 {3}Fable 5\.1/)
+    expect(rows.find(row => row.startsWith('EFFORT'))).toMatch(/^EFFORT {4}Low {2}Medium {2} High {3}XHigh {2}Max/)
     for (const row of rows) expect([...row].length).toBe(63)
   })
 

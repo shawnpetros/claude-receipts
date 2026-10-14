@@ -250,19 +250,44 @@ export function linesOf(tree: unknown): string[] {
   return lines
 }
 
-type PopoverKey = 'set-spike' | 'rows-off' | 'rows-clean' | 'rows-quiet'
+type PopoverKey = 'set-spike' | 'set-chatter' | 'set-crosscheck' | 'rows-off' | 'rows-clean' | 'rows-quiet'
 
 /**
- * Presses one of the popover's controls as a person does: opens the settings
- * with `/receipts tools`, presses it, closes them again. The test kit's `$`
- * has no `state` noun, so state is driven and read through the drawing.
+ * Sets one of the mod's switches as a person does. A rows level goes through
+ * `/receipts rows`; a panel switch opens the panel with `/receipts tools`,
+ * presses it, and closes the panel again. The test kit's `$` has no `state`
+ * noun, so state is driven and read through the drawing.
  */
 export async function flip($: { command: { run: (e: never) => Promise<unknown> }; ui: { mount: (e: never) => Promise<{ press: (t: { key: string }) => Promise<unknown>; unmount: () => Promise<void> }> } }, key: PopoverKey): Promise<void> {
+  if (key.startsWith('rows-')) {
+    await $.command.run({ command: 'receipts', args: `rows ${key.slice(5)}` } as never)
+    return
+  }
   await $.command.run({ command: 'receipts', args: 'tools' } as never)
   const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' } as never)
   await ui.press({ key })
-  await ui.press({ key: 'tools-close' })
   await ui.unmount()
+  await $.command.run({ command: 'receipts', args: 'tools' } as never)
+}
+
+/**
+ * The band's own bordered Box inside the drawn tree: the band sits beside
+ * the tools panel and above the Clean View rule.
+ */
+export function bandOf(tree: unknown): { props: { borderStyle?: string; borderColor?: string } } {
+  let found: unknown
+  const walk = (node: unknown): void => {
+    if (found || node === null || typeof node !== 'object') return
+    const element = node as { key?: string; props?: { key?: string; children?: unknown }; children?: unknown }
+    if (element.key === 'band' || element.props?.key === 'band') {
+      found = node
+      return
+    }
+    const children = (element.children ?? element.props?.children) as unknown
+    for (const child of Array.isArray(children) ? children : [children]) walk(child)
+  }
+  walk(tree)
+  return (found ?? { props: {} }) as { props: { borderStyle?: string; borderColor?: string } }
 }
 
 /**

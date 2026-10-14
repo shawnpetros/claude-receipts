@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { BAND_WIDE, linesOf, PANE, step, STEP_ANSWERS, worldOf } from './fixtures'
+import { bandOf, BAND_WIDE, linesOf, PANE, step, STEP_ANSWERS, worldOf } from './fixtures'
 
 async function band($: { ui: { mount: (e: never) => Promise<{ drawn: () => Promise<unknown>; unmount: () => Promise<void> }> } }): Promise<{ text: string; border?: string }> {
   const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' } as never)
   const drawn = (await ui.drawn()) as { props: { borderColor?: string } }
   const text = linesOf(drawn).join('')
   await ui.unmount()
-  return { text, border: drawn.props.borderColor }
+  return { text, border: bandOf(drawn).props.borderColor }
 }
 
 // 0.3.0: four tests here were deleted with plan derivation (SPEC-0.3

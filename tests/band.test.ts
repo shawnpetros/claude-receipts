@@ -4,7 +4,7 @@ import { bandView, innerWidthOf, MAX_STEP_ROWS, rowText, type BandView } from '.
 import type { RangeEstimate } from '../src/estimator'
 import type { Milestone, Plan } from '../src/milestones'
 import type { ViewModel } from '../src/view'
-import { BAND, BAND_WIDE, linesOf, worldOf } from './fixtures'
+import { bandOf, BAND, BAND_WIDE, linesOf, worldOf } from './fixtures'
 
 const PROMPT = 'Build a weather dashboard for New York City, with a 7-day forecast and an air quality card'
 
@@ -78,14 +78,16 @@ describe('band layout (pure)', () => {
     expect(rows).toHaveLength(2 + 4)
     for (const row of rows) expect([...row].length, row).toBe(innerWidthOf(columns))
     expect(rows[0]).toMatch(/^✶ Build a weather dashboard/)
-    expect(rows[0]).toMatch(/13s \[▾\]$/)
+    // Frames 20 and 22: the estimate, dim, before the elapsed time; the
+    // percent alone at the end of the summary row
+    expect(rows[0]).toMatch(/~4 to 9 min · from 3 similar tasks {2}13s$/)
     expect(rows[1]).toMatch(/^Step 2 of 4 /)
-    expect(rows[1]).toMatch(/35% {2}~4 to 9 min · from 3 similar tasks$/)
-    // Per-step rows: a 12-cell mini bar and a state word
-    expect(rows[2]).toMatch(/^✓ Pick the page style and layout +█{12} {2}Done/)
-    expect(rows[3]).toMatch(/^● Check how the page gets live weather +█{5}░{7} {2}Working/)
-    expect(rows[4]).toMatch(/^○ Build the weather dashboard +░{12} {2}Next/)
-    expect(rows[5]).toMatch(/ {2}Later/)
+    expect(rows[1]).toMatch(/ 35%$/)
+    // Per-step rows: a 16-cell mini bar and a state word
+    expect(rows[2]).toMatch(/^✓ Pick the page style and layout +█{16} {2}Done/)
+    expect(rows[3]).toMatch(/^● Check how the page gets live weather +█{6}░{10} {2}40%/)
+    expect(rows[4]).toMatch(/^○ Build the weather dashboard +░{16} {2}Next/)
+    expect(rows[5]).toMatch(/ {2}Up next/)
   })
 
   test('below 110 columns the per-step bars drop and nothing overflows', () => {
@@ -94,7 +96,7 @@ describe('band layout (pure)', () => {
     expect(rows).toHaveLength(6)
     for (const row of rows) expect([...row].length, row).toBe(innerWidthOf(columns))
     for (const row of rows.slice(2)) expect(row).not.toMatch(/[█░]/)
-    expect(rows[3]).toMatch(/Working/)
+    expect(rows[3]).toMatch(/40%/)
   })
 
   test('more than six steps: six rows around the current one, then "+n more"', () => {
@@ -105,19 +107,17 @@ describe('band layout (pure)', () => {
     expect(rows[rows.length - 1]).toMatch(/^\+3 more/)
   })
 
-  test('collapsed: the title row alone, with the expand mark', () => {
-    const rows = textsOf(bandView(workingOf(), 155, { ...OPTIONS, collapsed: true }))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatch(/\[▸\]$/)
-  })
+  // 0.3.0: "collapsed: the title row alone, with the expand mark" was
+  // deleted with the band's own fold control; the reference band (frames 18,
+  // 20, 26) has none, and Claude Code's [-] beside it hides the band whole
 
   test('the estimate is honest in the band: indeterminate, over by, basis named', () => {
     const indeterminate = textsOf(bandView(workingOf({ estimate: { kind: 'indeterminate' } }), 155, OPTIONS))
-    expect(indeterminate[1]).toMatch(/indeterminate$/)
+    expect(indeterminate[0]).toMatch(/indeterminate {2}13s$/)
 
     const over = bandView(workingOf({ estimate: rangeOf({ isOver: true, overByMs: 130_000 }) }), 155, OPTIONS)
     expect(over.tone).toBe('over')
-    expect(rowText(over.rows[1]!)).toMatch(/over by 2m 10s · ~4 to 9 min more · from 3 similar tasks$/)
+    expect(rowText(over.rows[0]!)).toMatch(/over by 2m 10s · ~4 to 9 min more · from 3 similar tasks {2}13s$/)
 
     // 0.3.0: the "derived" label went with plan derivation
   })
@@ -143,9 +143,9 @@ describe('completion card (pure)', () => {
     expect(view.tone).toBe('done')
     expect(view.border).toBe('success')
     expect(rows[0]).toMatch(/^ ✓ All done  Build a weather/)
-    expect(rows[0]).toMatch(/took 1m 47s \[▾\]$/)
-    expect(rows[1]).toMatch(/^4 of 4 steps ━+ 100%$/)
-    for (const row of rows.slice(2)) expect(row).toMatch(/^✓ .+█{12} {2}Done/)
+    expect(rows[0]).toMatch(/took 1m 47s$/)
+    expect(rows[1]).toMatch(/^4 of 4 steps █+ 100%$/)
+    for (const row of rows.slice(2)) expect(row).toMatch(/^✓ .+█{16} {2}Done/)
   })
 
 
@@ -167,8 +167,8 @@ describe('band in the session', () => {
 
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
     const drawn = (await ui.drawn()) as unknown as { props: { borderStyle?: string; borderColor?: string } }
-    expect(drawn.props.borderStyle).toBe('round')
-    expect(drawn.props.borderColor).toBe('claude')
+    expect(bandOf(drawn).props.borderStyle).toBe('round')
+    expect(bandOf(drawn).props.borderColor).toBe('claude')
     const lines = linesOf(drawn).join('')
     expect(lines).toMatch(/fix the loader/)
     expect(lines).toMatch(/Step 1 of 2/)
@@ -176,24 +176,8 @@ describe('band in the session', () => {
     expect(linesOf({ type: 'Box', children: row?.children })).toContain('Working')
   })
 
-  test('the collapse mark shrinks it to the title row and is kept in state', async ($, on) => {
-    worldOf(on)
-    await $.turn.start({ text: 'fix', turnId: 'bw2' })
-    await $.tool.call({ tool: 'TaskCreate', subject: 'One', description: 'x' })
-    const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
-    expect(await ui.find({ key: 'summary' })).toBeDefined()
-    await ui.press({ key: 'collapse' })
-    expect(await ui.find({ key: 'summary' })).toBeUndefined()
-    expect(await ui.find({ key: 'title' })).toBeDefined()
-
-    // Kept in state: a fresh drawing of the band is still collapsed
-    await ui.unmount()
-    const remounted = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
-    expect(await remounted.find({ key: 'summary' })).toBeUndefined()
-    expect(await remounted.find({ key: 'collapse', text: '[▸]' })).toBeDefined()
-    await remounted.press({ key: 'collapse' })
-    expect(await remounted.find({ key: 'summary' })).toBeDefined()
-  })
+  // 0.3.0: "the collapse mark shrinks it to the title row and is kept in
+  // state" was deleted with the band's own fold control (see above)
 
   test('turn.complete recolours it green and it stays until the next prompt', async ($, on) => {
     const world = worldOf(on, { claimsDone: true })
@@ -205,7 +189,7 @@ describe('band in the session', () => {
 
     const ui = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
     const drawn = (await ui.drawn()) as unknown as { props: { borderColor?: string } }
-    expect(drawn.props.borderColor).toBe('success')
+    expect(bandOf(drawn).props.borderColor).toBe('success')
     expect(linesOf(drawn).join('')).toMatch(/✓ All done/)
     expect(linesOf(drawn).join('')).toMatch(/receipt · bun test · exit 0/)
     expect(linesOf(drawn).join('')).toMatch(/took 1m 47s/)
@@ -214,7 +198,7 @@ describe('band in the session', () => {
     await $.turn.start({ text: 'next thing', turnId: 'bw4' })
     const again = await $.ui.mount({ ...BAND_WIDE, surface: 'terminal' })
     const next = (await again.drawn()) as unknown as { props: { borderColor?: string } }
-    expect(next.props.borderColor).toBe('claude')
+    expect(bandOf(next).props.borderColor).toBe('claude')
     expect(linesOf(next).join('')).toMatch(/next thing/)
   })
 
@@ -225,15 +209,17 @@ describe('band in the session', () => {
     await $.turn.complete({ turnId: 'bw5', answer: 'Done.', durationMs: 1, isAborted: false, reason: 'answer' })
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     const drawn = (await ui.drawn()) as unknown as { props: { borderColor?: string } }
-    expect(drawn.props.borderColor).toBe('warning')
+    expect(bandOf(drawn).props.borderColor).toBe('warning')
     expect(linesOf(drawn).join('')).toMatch(/⚠ Done, unverified/)
     expect(linesOf(drawn).join('')).toMatch(/src\/y\.ts/)
   })
 
-  test('idle with nothing to show, and while a survey holds it, the band is Claude Code\'s', async ($, on) => {
+  test('idle: only the Clean View rule; while a survey holds it, the band is Claude Code\'s', async ($, on) => {
     worldOf(on)
     const idle = await $.ui.mount({ ...BAND, surface: 'terminal' })
-    expect(linesOf(await idle.drawn())).toEqual(['drawn by Claude Code'])
+    const lines = linesOf(await idle.drawn())
+    expect(lines.join('')).toMatch(/^─+ Clean View ─$/)
+    expect(await idle.find({ key: 'band' })).toBeUndefined()
     await idle.unmount()
     await $.turn.start({ text: 'fix', turnId: 'bw6' })
     const survey = await $.ui.mount({ ...BAND, props: { ...BAND.props, hasSurvey: true }, surface: 'terminal' })
