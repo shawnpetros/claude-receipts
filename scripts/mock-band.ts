@@ -5,7 +5,8 @@
 //
 //   bun scripts/mock-band.ts [columns]
 
-import { bandView, framedText, innerWidthOf, toolsView, TOOLS_COLUMNS, type BandOptions } from '../src/band'
+import { bandView, dividerRow, framedText, innerWidthOf, rowText, toolsView, TOOLS_COLUMNS, type BandOptions } from '../src/band'
+import { receiptsSwitches } from '../src/switches'
 import type { RangeEstimate } from '../src/estimator'
 import type { Milestone, Plan } from '../src/milestones'
 import type { Finished, ViewModel } from '../src/view'
@@ -78,6 +79,7 @@ function show(label: string, model: ViewModel, width = columns, options = OPEN):
   const view = bandView(model, width, options)
   console.log(`\n${label} · ${width} body columns · border ${view.border}`)
   for (const row of framedText(view.rows, innerWidthOf(width))) console.log(row)
+  console.log(rowText(dividerRow(width, 'Clean View')))
 }
 
 // The six card states (SPEC-0.3 section 5)
@@ -121,6 +123,23 @@ show('done, unverified, narrow terminal', ended(planOf(4), { ledger: 'unverified
 show('collapsed', base, columns, { ...OPEN, collapsed: true })
 
 const toolsWidth = Math.min(columns, TOOLS_COLUMNS) - 4
-console.log(`\nsettings popover (t) · ${toolsWidth + 4} columns, right-aligned in the band`)
-const rows = toolsView({ model: 'claude-opus-5-5[1m]', effort: 'high', rows: 'quiet', spike: true }, toolsWidth)
+console.log(`\ntools panel · ${toolsWidth + 4} columns, right-aligned in the band, opened from the footer`)
+const rows = toolsView(
+  {
+    model: 'claude-opus-5-5[1m]',
+    effort: 'high',
+    rows: 'quiet',
+    crossCheck: true,
+    spike: true,
+    chatter: true,
+    mods: [
+      ...receiptsSwitches(true).map(entry => ({ mod: 'receipts', ...entry })),
+      { mod: 'buddy', id: 'buddy', label: 'Buddy', description: 'a companion in the corner', value: false },
+    ],
+  },
+  toolsWidth,
+)
 for (const row of framedText(rows, toolsWidth)) console.log(row.padStart(columns))
+console.log(rowText(dividerRow(columns, 'Clean View')))
+console.log(`${'footer, closed:'.padEnd(columns - 18)}◆ Shawn's Tools ▲`)
+console.log(`${'footer, open:'.padEnd(columns - 18)}◆ Shawn's Tools ▼`)

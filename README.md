@@ -35,9 +35,11 @@ To check that it's learning, finish a turn and run `/receipts stats`. The count 
 
 While a turn runs, the band has an orange border and these rows:
 
-- **Title.** A ✶, your prompt cut to fit, and the elapsed time on the right.
-- **Summary.** `Step 2 of 4`, a full-width bar, the percent done, then the estimate in dim text with its basis, such as `~4 to 9 min · from 3 similar tasks`. The percent is weighted by how long each step is expected to take.
-- **One row per step.** A 12-cell bar for the step and a word: `Working`, `Next`, `Later` or `Done`. At most six steps show, around the current one, then `+n more`.
+- **Title.** A ✶ and your prompt, cut at 40 columns with an ellipsis. On the right, the estimate in dim text with its basis, such as `~4 to 9 min · from 3 similar tasks`, then the elapsed time.
+- **Summary.** `Step 2 of 4`, a full-width bar of cells, and the percent done at the right end. The percent is weighted by how long each step is expected to take.
+- **One row per step.** A 16-cell bar in one column and a word: `Done`, `Working` for the step under way (its own percent, such as `40%`, once it has any), `Next` for the step after it, and `Up next` for the rest. At most six steps show, around the current one, then `+n more`.
+
+Under the band, just above the prompt, a rule reads `───── Clean View ─` while the rows level is Clean or Quiet. It shows when no turn is running too.
 
 The steps are Claude's own, recorded with TaskCreate and TaskUpdate. If Claude records none, there are no steps: the second row reads `working · 1m 13s` with the estimate, and there's no percent to make up.
 
@@ -62,29 +64,38 @@ When the elapsed time passes the top of the range, the border and bar turn grey 
 
 Below 110 columns the per-step bars drop and each step keeps its word. Nothing in the band is ever wider than the terminal.
 
-`[▾]` on the title row folds the band to that one row, and `[▸]` opens it again. Claude Code draws its own `[-]` just outside the border, and that one hides the whole band.
+The band draws no buttons of its own. Claude Code's `[-]` just outside the border hides it.
 
-### Keys
+### Tools panel
 
-Click the band, or press ctrl+x then tab, to give it the keyboard. Then:
+The footer at the right of the prompt shows `◆ Shawn's Tools ▲`. Click it, or run `/receipts tools`, and a bordered panel opens at the right of the band. The button then reads `◆ Shawn's Tools ▼`. Click it again, or run the command again, to close the panel.
 
-| Key | What it does |
-| :- | :- |
-| `b` | Shows a one-line tooltip with the estimate's basis and the calibration score. Press again to hide it. |
-| `t` | Opens or closes the settings popover |
-
-### Settings popover
-
-`t` or `/receipts tools` opens a small bordered panel at the right of the band. It has three sections:
-
-- **M O D E L.** Haiku, Sonnet, Opus and Fable. The current model is highlighted. Picking one sets the `/config` model row when this build has one that takes it, and otherwise runs `/model <name>`.
-- **E F F O R T.** Low, Medium, High, XHigh and Max, the same way, through `/effort`. The current level is highlighted once a model request has carried it.
-- **R O W S.** Off, Clean or Quiet: how much of the transcript the mod draws away. See below.
-- **S E T T I N G S.** An On and Off switch for the spike.
+- **Title.** `◆ S H A W N ' S   T O O L S`, with the current model and effort at the right, such as `Opus 5.5 · High`.
+- **MODEL.** Haiku 4.5, Sonnet 5, Opus 5.5 and Fable 5.1. The current model is highlighted and isn't a button. Picking another sets the `/config` model row when this build has one that takes it, and otherwise runs `/model <name>`.
+- **EFFORT.** Low, Medium, High, XHigh and Max, the same way, through `/effort`. The current level is highlighted once a model request has carried it.
+- **SETTINGS.** Each row has a dot, a name, a dim description and a toggle at the right:
+  - **Clean View** steps through the rows levels Off, Clean and Quiet. See below.
+  - **Receipts cross-check** turns the cross-check on or off, as `/receipts check` does.
+  - **Spike** turns the sizing subagent on or off.
+  - **Suppress agent chatter** folds subagent hand-backs and messages from other sessions at the quiet level.
+- **MODS.** On and Off switches that our mods publish. Receipts publishes **Receipt line**, the line under an answer that claims done. A buddy mod can add its own.
+- **LAUNCH.** **Receipts stats** shows `/receipts stats` as a toast. **Mark receipt wrong** marks this turn's receipt, as `/receipts wrong` does.
 
 Your plugin settings can't change while a session runs, so these choices override them for the rest of the session. `/clear` puts your settings back.
 
-The `[-]` at the top right closes it, as does `t` again. Escape only hands the keyboard back to the prompt, because Claude Code tells a mod nothing when you press it.
+`/receipts basis` shows a one-line tooltip on the band with the estimate's basis and the calibration score.
+
+#### Publishing a switch from another mod
+
+Each mod's store is its own file, so the switches can't live in a shared store key. A mod publishes its list in its own session state instead, under the key `switches`, which any mod may read:
+
+```ts
+await $.state.set({ plugin: 'buddy', key: 'switches' }, [
+  { id: 'buddy', label: 'Buddy', description: 'a companion in the corner', value: true },
+])
+```
+
+The panel reads every mod it knows by name. A press on another mod's switch is written to receipts' own state key `switchRequests` as `{ [id]: value }`, because only the owner may write its state. The owner reads that key and applies the change. The panel names each mod in its source, so a new mod is one line in `hooks/register.ts`.
 
 ## The honesty contract
 
@@ -143,7 +154,7 @@ If the current turn's receipt is wrong, for example it called an answer done whe
 | Command | What it does |
 | :- | :- |
 | `/receipts` | Opens or closes the pane, the long view with the calibration line |
-| `/receipts tools` | Opens the settings popover in the band |
+| `/receipts tools` | Opens or closes the tools panel, as the footer button does |
 | `/receipts rows [off\|clean\|quiet]` | Sets the rows level, or steps to the next one with no argument |
 | `/receipts clean` | Switches the rows level to Off, and back to what it was |
 | `/receipts basis` | Shows or hides the basis tooltip, as `b` does |
@@ -183,7 +194,7 @@ Set these under `pluginConfigs` in your Claude Code settings. Use the key `recei
 | Key | Default | What it does |
 | :- | :- | :- |
 | `spike` | `true` | Allows the sizing subagent for unfamiliar build-type tasks. Set it to `false` and the mod never spawns one. |
-| `cleanView` | `true` | Starts each session at the quiet rows level. Set it to `false` to start at Off. The popover and `/receipts rows` change it for the session. |
+| `cleanView` | `true` | Starts each session at the quiet rows level. Set it to `false` to start at Off. The tools panel and `/receipts rows` change it for the session. |
 | `crossCheck` | `true` | Spawns the read-only cross-check agent when a turn with edits claims done |
 | `crossCheckModel` | `opus` | The model the cross-check runs on, as an alias or a model id |
 
@@ -217,6 +228,6 @@ bun scripts/mock-band.ts 155
 bun scripts/check-manifest.ts
 ```
 
-`scripts/mock-band.ts` prints the band as plain text: the six card states, then working with no task list, over the range, checks failed, narrow, collapsed, and the popover. It uses the same pure view the mod draws from. The argument is the band's width, which is the terminal's width less 5.
+`scripts/mock-band.ts` prints the band as plain text: the six card states, then working with no task list, over the range, checks failed, narrow, collapsed, the tools panel and the footer button. Every band is followed by the Clean View rule. It uses the same pure view the mod draws from. The argument is the band's width, which is the terminal's width less 5.
 
 `src/` holds the logic as plain modules with no mods API dependency. These are the estimator, history, milestones, ledger, crosscheck, quiet, shape, spike, view and band modules, plus a session that talks to Claude Code through a small host interface. `hooks/register.ts` builds that host from `$` and wires the hooks.
